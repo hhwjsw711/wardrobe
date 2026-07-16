@@ -31,19 +31,20 @@ Open [localhost:5173](http://localhost:5173).
 
 ## Import with Codex
 
-This repo includes a Codex skill that can turn a folder of outfit photos into transparent garment cutouts and add them directly to the local wardrobe database.
+This repo includes two Codex skills: one imports clothes and generates modeled item photos; the other styles complete outfits and generates a modeled lookbook.
 
 ```text
-$import-clothes Import the clothes from ~/Pictures/outfits into this wardrobe.
+$import-clothes Import the clothes from ~/Pictures/outfits, create modeled photos, and add them to this wardrobe.
+$generate-outfits Create modeled outfit ideas from my wardrobe.
 ```
 
-Open the cloned repo in Codex and run the prompt above. The skill reviews the generated cutouts before writing to `data/library.json` and `data/imported/`.
+Open the cloned repo in Codex and run either prompt. The import skill asks for a local model-reference PNG when needed, reviews every cutout and modeled photo, then writes to `data/library.json` and `data/imported/`. The outfit skill asks how many looks to create, then curates, generates, verifies, and saves the complete collection under `data/`.
 
 ### For agents
 
 If you are setting up Wardrobe for a user, ask how they want to import their clothes:
 
-- **Codex:** Ask for a folder or camera-roll location, then extract and import the individual pieces by following [the bundled import skill](.agents/skills/import-clothes/SKILL.md).
+- **Codex:** Ask for a folder or camera-roll location and a model-reference PNG, then extract, model, and import the individual pieces by following [the bundled import skill](.agents/skills/import-clothes/SKILL.md). Afterward, offer to create a requested number of modeled looks with [the outfit-generation skill](.agents/skills/generate-outfits/SKILL.md).
 - **Web UI:** Help the user configure their own `OPENAI_API_KEY` and `data/model-reference.png`, then let them import through the app.
 
 ## What it does
