@@ -651,7 +651,7 @@ export function wardrobeImportApi(options = {}) {
       root = config.root;
       const dataDir = path.resolve(root, setting("WARDROBE_DATA_DIR", "data"));
       jobsDir = path.join(dataDir, "jobs");
-      importedFile = path.join(dataDir, "wardrobe.json");
+      importedFile = path.join(dataDir, "library.json");
       libraryAssetDir = path.join(dataDir, "imported");
       await mkdir(jobsDir, { recursive: true });
       await mkdir(libraryAssetDir, { recursive: true });
