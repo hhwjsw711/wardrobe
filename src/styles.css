@@ -878,6 +878,16 @@ button { font: inherit; }
     padding-top: 22px;
     padding-left: 0;
   }
+  /* Narrow viewports: cap each piece in a multi-piece row so 2 tops fit
+     side-by-side without overflowing the viewer width. Single-piece
+     scatter stays full-width (its max-width: 360px still applies). */
+  .outfit-viewer-row .outfit-viewer-piece {
+    max-width: 46%;
+  }
+  .outfit-viewer-piece img,
+  .outfit-viewer-piece .optimized-image {
+    max-height: 220px;
+  }
 }
 
 @media (max-width: 520px) {
@@ -1058,23 +1068,40 @@ button { font: inherit; }
   align-items: center;
   justify-content: center;
   gap: 0;
-  padding: 8px 8% 18px;
+  padding: 12px 6% 22px;
+}
+
+/* Multi-piece group row: 2+ tops sit side-by-side.
+   gap: 0 — horizontal spacing is driven by --piece-x on each piece.
+   Pieces keep the SAME size as single-piece scatter (no 48% shrinking). */
+.outfit-viewer-row {
+  display: flex;
+  flex-direction: row;
+  justify-content: center;
+  align-items: center;
+  gap: 0;
+  min-height: 0;
+  width: 100%;
 }
 
 .outfit-viewer-piece {
-  width: 100%;
-  max-width: 360px;
   display: flex;
   justify-content: center;
+  flex: 0 0 auto;       /* never shrink — keep natural piece size */
+  max-width: 360px;     /* unified with single-piece scatter */
   transform: translateX(var(--piece-x, 0)) translateY(var(--piece-y, 0)) rotate(var(--piece-rot, 0deg));
   transition: transform 320ms cubic-bezier(.34, 1.3, .64, 1);
 }
 
-/* Subsequent pieces sit smaller + small gap (not overlap) → breathing room,
-   loose flat-lay without crushing the previous piece. */
-.outfit-viewer-piece + .outfit-viewer-piece {
-  max-width: 320px;
-  margin-top: 6px;
+/* Single-piece scatter (direct child of .outfit-viewer-pieces) behaves like
+   the original vertical flat-lay: full width, subsequent piece overlaps
+   upward via negative margin-top to keep the loose flat-lay feel. */
+.outfit-viewer-pieces > .outfit-viewer-piece {
+  width: 100%;
+}
+
+.outfit-viewer-pieces > .outfit-viewer-piece + .outfit-viewer-piece {
+  margin-top: -2px;
 }
 
 .outfit-viewer-piece img,

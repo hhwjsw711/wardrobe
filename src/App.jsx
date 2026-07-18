@@ -607,20 +607,72 @@ function hash01(str) {
   return (h >>> 0) / 4294967296;
 }
 
-// Returns { xPct, rotDeg, yPct } for piece at `index` in outfit `outfitId`.
-// Outward tilt + zig-zag drift + small overlap → loose flat-lay that
-// "opens outward" (top leans left, bottom leans right, etc.) instead of
-// collapsing toward center.
+// Group garments by their `part` while preserving first-appearance order.
+// Each group becomes one horizontal row in the outfit viewer so that e.g.
+// two tops sit side-by-side and a pair of bottoms gets its own row below.
+function groupGarmentsByPart(garments) {
+  const groups = [];
+  const index = new Map();
+  for (const g of garments) {
+    const part = g.part || "upperbody";
+    let group = index.get(part);
+    if (!group) {
+      group = { part, items: [] };
+      index.set(part, group);
+      groups.push(group);
+    }
+    group.items.push(g);
+  }
+  return groups;
+}
+
+// Vertical flat-lay scatter for single-piece groups (1 top + 1 bottom case).
+// Outward tilt + zig-zag drift + small upward overlap on subsequent pieces →
+// loose flat-lay that reads as "随手摆放" instead of aligned stack.
+// Same outfit+garment → same scatter every render (no flicker).
 function pieceScatter(outfitId, garmentId, index) {
   const r1 = hash01(`${outfitId}:${garmentId}:x`);
   const r2 = hash01(`${outfitId}:${garmentId}:r`);
   const r3 = hash01(`${outfitId}:${garmentId}:y`);
   const side = index % 2 === 0 ? 1 : -1; // even → right, odd → left
   const xPct = side * (8 + r1 * 7);      // ±8%..±15%
-  // Outward rotation: even (right side) tilts clockwise (+), odd (left side) tilts CCW (−).
-  // Mirror the x sign so each piece leans AWAY from the centerline.
   const rotDeg = side * (3 + r2 * 4);    // ±3°..±7°, tilting outward
   const yPct = index === 0 ? 0 : -(4 + r3 * 6); // subsequent pieces overlap upward 4%..10%
+  return { xPct, rotDeg, yPct };
+}
+
+// Horizontal layout for multi-piece groups (2+ tops side-by-side case).
+// Returns { xPct, rotDeg, yPct } consumed as CSS custom properties on
+// `.outfit-viewer-piece`. Even pieces drift down-right, odd pieces drift
+// up-left, both with INWARD tilt (tops lean toward center → reads as two
+// garments casually drooping onto each other). 3rd+ pieces add x/y jitter
+// so they don't pile on top of idx 0/1.
+// Piece size stays identical to single-piece groups — no shrinking.
+// Pieces overlap in the middle — flat-lay feel where garment edges naturally
+// drape over each other. Diagonal y offsets the silhouettes so the overlap
+// still reads as two distinct pieces.
+function rowLayout(totalInRow, idxAmongPart, outfitId, garmentId) {
+  const side = idxAmongPart % 2 === 0 ? -1 : 1; // even → left-side var, odd → right-side var
+  const rx = hash01(`${outfitId}:${garmentId}:rx`);
+  const rr = hash01(`${outfitId}:${garmentId}:rr`);
+  const ry = hash01(`${outfitId}:${garmentId}:ry`);
+  // 3rd+ piece in the same row: add x/y jitter so it doesn't land on idx 0/1.
+  if (idxAmongPart >= 2) {
+    const jx = hash01(`${outfitId}:${garmentId}:jx`);
+    const jy = hash01(`${outfitId}:${garmentId}:jy`);
+    // Pick a side based on parity, then scatter wider than the base pair.
+    const jside = idxAmongPart % 2 === 0 ? 1 : -1;
+    const xPct = jside * (10 + jx * 6);         // ±10%..±16% pushed outward
+    const rotDeg = jside * (4 + rr * 4);        // ±4°..±8° matching base tilt direction
+    const yPct = (jy - 0.5) * 14;               // ±7% vertical scatter
+    return { xPct, rotDeg, yPct };
+  }
+  // Negative x → pieces move INWARD and overlap at center. Flat-lay drape.
+  const xPct = side * -(7 + rx * 4);           // ∓7%..∓11% inward overlap (idx 0 → right, idx 1 → left)
+  const rotDeg = side * (4 + rr * 4);          // ±4°..±8° inward tilt (tops lean toward center)
+  // Diagonal flat-lay: even drifts down, odd drifts up — silhouettes offset.
+  const yDir = idxAmongPart % 2 === 0 ? 1 : -1;
+  const yPct = yDir * (3 + ry * 4);            // ±3%..±7% diagonal lift/drop
   return { xPct, rotDeg, yPct };
 }
 
@@ -719,28 +771,72 @@ function OutfitViewer({ outfit, lookNumber, onClose, onDelete, onRegenerate }) {
 
           <div className="outfit-viewer-pieces">
             {garments.length > 0 ? (
-              garments.map((garment, idx) => {
-                const { xPct, rotDeg, yPct } = pieceScatter(outfit.id, garment.id, idx);
-                return (
-                  <div
-                    className="outfit-viewer-piece"
-                    key={garment.id}
-                    style={{
-                      "--piece-x": `${xPct}%`,
-                      "--piece-rot": `${rotDeg}deg`,
-                      "--piece-y": `${yPct}%`,
-                    }}
-                  >
-                    <OptimizedImage
-                      src={garment.thumbnail || garment.image}
-                      alt={garment.name}
-                      sizes="(max-width: 860px) 100vw, 440px"
-                      breakpoints={[200, 320, 440, 560]}
-                      quality={88}
-                    />
-                  </div>
-                );
-              })
+              (() => {
+                const groups = groupGarmentsByPart(garments);
+                let singleIdx = 0; // running index for single-piece groups (pieceScatter)
+                return groups.map((group) => {
+                  if (group.items.length === 1) {
+                    // Single-piece group → vertical flat-lay scatter (original feel).
+                    const garment = group.items[0];
+                    const i = singleIdx++;
+                    const { xPct, rotDeg, yPct } = pieceScatter(outfit.id, garment.id, i);
+                    return (
+                      <div
+                        className="outfit-viewer-piece"
+                        key={garment.id}
+                        style={{
+                          "--piece-x": `${xPct}%`,
+                          "--piece-rot": `${rotDeg}deg`,
+                          "--piece-y": `${yPct}%`,
+                        }}
+                      >
+                        <OptimizedImage
+                          src={garment.thumbnail || garment.image}
+                          alt={garment.name}
+                          sizes="(max-width: 860px) 100vw, 440px"
+                          breakpoints={[200, 320, 440, 560]}
+                          quality={88}
+                        />
+                      </div>
+                    );
+                  }
+                  // Multi-piece group → horizontal row, same piece size as single.
+                  return (
+                    <div
+                      className="outfit-viewer-row"
+                      key={group.part}
+                    >
+                      {group.items.map((garment, idx) => {
+                        const { xPct, rotDeg, yPct } = rowLayout(
+                          group.items.length,
+                          idx,
+                          outfit.id,
+                          garment.id
+                        );
+                        return (
+                          <div
+                            className="outfit-viewer-piece"
+                            key={garment.id}
+                            style={{
+                              "--piece-x": `${xPct}%`,
+                              "--piece-rot": `${rotDeg}deg`,
+                              "--piece-y": `${yPct}%`,
+                            }}
+                          >
+                            <OptimizedImage
+                              src={garment.thumbnail || garment.image}
+                              alt={garment.name}
+                              sizes="(max-width: 860px) 100vw, 440px"
+                              breakpoints={[200, 320, 440, 560]}
+                              quality={88}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                });
+              })()
             ) : (
               <div className="outfit-placeholder large">
                 <CoatHanger size={48} weight="light" aria-hidden="true" />
