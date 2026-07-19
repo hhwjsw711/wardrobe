@@ -3,11 +3,17 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
+import sharp from "sharp";
 import test from "node:test";
 import { createServer } from "vite";
 
 const ITEM_ID = "import-11111111-1111-4111-8111-111111111111";
 const TEST_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const TEST_GARMENT = await sharp({ create: { width: 24, height: 32, channels: 4, background: "#cc2222" } }).png().toBuffer();
+const TEST_GARMENT_RESULT = await sharp({ create: { width: 64, height: 64, channels: 3, background: "#00ffff" } })
+  .composite([{ input: TEST_GARMENT, left: 20, top: 16 }])
+  .png()
+  .toBuffer();
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -228,6 +234,7 @@ test("uploads become durable background jobs and deleted work cannot crash the s
   assert.equal(uploadResponse.status, 202);
   const queuedUpload = (await uploadResponse.json()).jobs[0];
   assert.equal(queuedUpload.kind, "upload");
+  assert.equal(queuedUpload.autoProcess, true);
   assert.ok(["queued", "processing"].includes(queuedUpload.analysis.status));
 
   await analysisStarted;
@@ -240,10 +247,8 @@ test("uploads become durable background jobs and deleted work cannot crash the s
     const jobs = await (await fetch(`${baseUrl}/api/import/jobs`)).json();
     return jobs.find((job) => job.kind === "garment");
   });
-  assert.equal(garmentJob.stages.crop.status, "review");
-
-  const approveResponse = await fetch(`${baseUrl}/api/import/jobs/${garmentJob.id}/stages/crop/approve`, { method: "POST" });
-  assert.equal(approveResponse.status, 200);
+  assert.equal(garmentJob.autoProcess, true);
+  assert.equal(garmentJob.stages.crop.status, "approved");
   await imageStarted;
   const deleteResponse = await fetch(`${baseUrl}/api/import/jobs/${garmentJob.id}`, { method: "DELETE" });
   assert.equal(deleteResponse.status, 200);
@@ -252,6 +257,90 @@ test("uploads become durable background jobs and deleted work cannot crash the s
   await delay(150);
   const healthResponse = await fetch(`${baseUrl}/api/import/config`);
   assert.equal(healthResponse.status, 200);
+});
+
+test("new uploads automatically finish and enter the wardrobe", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "wardrobe-auto-"));
+  const referenceFile = path.join(dataDir, "model-reference.png");
+  await writeFile(referenceFile, Buffer.from(TEST_PNG_BASE64, "base64"));
+  let imageRequests = 0;
+
+  const openAI = createHttpServer((request, response) => {
+    void (async () => {
+      for await (const _chunk of request) { /* consume request */ }
+      response.setHeader("Content-Type", "application/json");
+      if (request.url === "/responses") {
+        response.end(JSON.stringify({
+          output_text: JSON.stringify({
+            items: [{
+              name: "Automatic red shirt",
+              part: "upperbody",
+              color: "#cc2222",
+              secondaryColor: null,
+              tags: ["automatic"],
+              boundingBox: { x: 0, y: 0, width: 1000, height: 1000 },
+            }],
+          }),
+        }));
+        return;
+      }
+      if (request.url === "/images/edits") {
+        imageRequests += 1;
+        response.end(JSON.stringify({ data: [{ b64_json: TEST_GARMENT_RESULT.toString("base64") }] }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end(JSON.stringify({ error: { message: "Not found" } }));
+    })();
+  });
+  await new Promise((resolve) => openAI.listen(0, "127.0.0.1", resolve));
+  const openAIAddress = openAI.address();
+
+  process.env.WARDROBE_DATA_DIR = dataDir;
+  process.env.WARDROBE_MODEL_REFERENCE = referenceFile;
+  process.env.WARDROBE_IMPORT_CONCURRENCY = "2";
+  process.env.OPENAI_API_KEY = "test-project-key";
+  process.env.OPENAI_API_BASE_URL = `http://127.0.0.1:${openAIAddress.port}`;
+
+  const server = await createServer({
+    optimizeDeps: { noDiscovery: true },
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  await server.listen();
+  const address = server.httpServer.address();
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  context.after(async () => {
+    await server.close();
+    await new Promise((resolve) => openAI.close(resolve));
+    delete process.env.WARDROBE_DATA_DIR;
+    delete process.env.WARDROBE_MODEL_REFERENCE;
+    delete process.env.WARDROBE_IMPORT_CONCURRENCY;
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_BASE_URL;
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  const uploadResponse = await fetch(`${baseUrl}/api/import/jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      imageDataUrl: `data:image/png;base64,${TEST_PNG_BASE64}`,
+      autoProcess: true,
+      metadata: { name: "automatic-phone-photo" },
+    }),
+  });
+  assert.equal(uploadResponse.status, 202);
+
+  const imported = await waitFor(async () => {
+    const items = await (await fetch(`${baseUrl}/api/import/wardrobe`)).json();
+    return items.find((item) => item.name === "Automatic red shirt" && item.modeledImage);
+  }, 5000);
+  assert.equal(imported.part, "upperbody");
+  assert.equal(imageRequests, 2);
+
+  const remainingJobs = await (await fetch(`${baseUrl}/api/import/jobs`)).json();
+  assert.equal(remainingJobs.length, 0);
 });
 
 test("queued analysis resumes when the Wardrobe service restarts", async (context) => {

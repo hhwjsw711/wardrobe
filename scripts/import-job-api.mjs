@@ -558,13 +558,17 @@ export function wardrobeImportApi(options = {}) {
       await writeFile(path.join(dir, originalFile), normalizedImage);
       await writeFile(path.join(dir, cropFile), croppedImage);
       const now = new Date().toISOString();
-      const cropStage = { ...stageState(), status: "review", assetUrl: `${ASSET_ROOT}/${id}/${cropFile}`, updatedAt: now };
+      const autoProcess = sourceJob.autoProcess === true;
+      const cropStage = { ...stageState(), status: autoProcess ? "approved" : "review", decision: autoProcess ? "approved" : null, assetUrl: `${ASSET_ROOT}/${id}/${cropFile}`, updatedAt: now };
+      const garmentStage = stageState();
+      if (autoProcess) garmentStage.status = "queued";
       const job = {
         id,
         kind: "garment",
+        autoProcess,
         status: "active",
         metadata,
-        stages: { crop: cropStage, garment: stageState(), modeled: stageState() },
+        stages: { crop: cropStage, garment: garmentStage, modeled: stageState() },
         createdAt: now,
         updatedAt: now,
         internal: {
@@ -616,6 +620,9 @@ export function wardrobeImportApi(options = {}) {
         }
         if (created.length) {
           await rm(path.join(jobsDir, current.id), { recursive: true, force: true });
+          for (const item of created) {
+            if (item.autoProcess) void generate(item, "garment");
+          }
         } else {
           fresh.analysis.status = "empty";
           fresh.analysis.detectedCount = 0;
@@ -685,19 +692,33 @@ export function wardrobeImportApi(options = {}) {
         await writeFile(output, bytes);
         const fresh = await loadJob(current.id);
         if (!fresh?.stages?.[stageName]) return;
-        fresh.stages[stageName].status = "review";
-        fresh.stages[stageName].assetUrl = `${ASSET_ROOT}/${fresh.id}/${path.basename(output)}`;
-        fresh.stages[stageName].failedAssetUrl = null;
-        fresh.stages[stageName].cleanupPreviewUrl = null;
-        fresh.stages[stageName].cleanupDiagnostics = null;
-        if (chromaKeyUsed) fresh.stages[stageName].chromaKey = chromaKeyUsed;
-        fresh.stages[stageName].updatedAt = new Date().toISOString();
+        const completedStage = fresh.stages[stageName];
+        completedStage.status = fresh.autoProcess ? "approved" : "review";
+        completedStage.decision = fresh.autoProcess ? "approved" : null;
+        completedStage.assetUrl = `${ASSET_ROOT}/${fresh.id}/${path.basename(output)}`;
+        completedStage.failedAssetUrl = null;
+        completedStage.cleanupPreviewUrl = null;
+        completedStage.cleanupDiagnostics = null;
+        if (chromaKeyUsed) completedStage.chromaKey = chromaKeyUsed;
+        completedStage.updatedAt = new Date().toISOString();
+        if (fresh.autoProcess && stageName === "garment") {
+          fresh.stages.modeled.status = "queued";
+          fresh.stages.modeled.error = null;
+        }
+        if (fresh.autoProcess && stageName === "modeled") fresh.status = "complete";
         await saveJob(fresh);
+        if (fresh.autoProcess) {
+          await persistImported(fresh, stageName === "modeled");
+          if (stageName === "garment") void generate(fresh, "modeled");
+          else await rm(path.join(jobsDir, fresh.id), { recursive: true, force: true });
+        }
         console.log("[wardrobe queue] generation completed", { id: current.id, stage: stageName });
       } catch (error) {
         const fresh = await loadJob(current.id);
         if (!fresh?.stages?.[stageName]) return;
+        fresh.status = "active";
         fresh.stages[stageName].status = "failed"; fresh.stages[stageName].error = error.message; fresh.stages[stageName].updatedAt = new Date().toISOString();
+        if (stageName === "garment" && fresh.autoProcess) fresh.stages.modeled.status = "pending";
         if (typeof failedAssetUrl === "string") fresh.stages[stageName].failedAssetUrl = failedAssetUrl;
         if (chromaKeyUsed) fresh.stages[stageName].chromaKey = chromaKeyUsed;
         await saveJob(fresh);
@@ -801,6 +822,7 @@ export function wardrobeImportApi(options = {}) {
         const job = {
           id,
           kind: "upload",
+          autoProcess: input.autoProcess !== false,
           status: "active",
           metadata: { name: sourceName || "Wardrobe photo" },
           analysis: analysisState(),

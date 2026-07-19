@@ -58,7 +58,7 @@ If you are setting up Wardrobe for a user, ask how they want to import their clo
 - Detects every garment in a photo with the OpenAI Responses API
 - Extracts clean product cutouts with the OpenAI Images API
 - Generates an optional modeled editorial preview
-- Saves phone uploads on the computer before queueing API work, then resumes unfinished jobs after restarts
+- Saves phone uploads on the computer before queueing API work, automatically finishes new imports, and resumes unfinished jobs after restarts
 - Keeps originals, jobs, generated images, and the JSON database local in `data/`
 - Supports drag, drop, paste, editing, review, regeneration, and approval
 
