@@ -394,11 +394,13 @@ export function wardrobeImportApi(options = {}) {
   const running = new Map();
   const setting = (name, fallback = "") => options.env?.[name] || process.env[name] || fallback;
   const apiBaseUrl = () => setting("OPENAI_API_BASE_URL", "https://api.openai.com/v1").replace(/\/$/, "");
+  const modelReferenceSetting = () => setting("WARDROBE_MODEL_REFERENCE", "data/model-reference.png");
+  const modelReferencePath = () => path.resolve(root, modelReferenceSetting());
 
   async function setupStatus() {
     const hasApiKey = Boolean(setting("OPENAI_API_KEY").trim());
-    const referenceSetting = setting("WARDROBE_MODEL_REFERENCE", "data/model-reference.png");
-    const referencePath = path.resolve(root, referenceSetting);
+    const referenceSetting = modelReferenceSetting();
+    const referencePath = modelReferencePath();
     let hasModelReference = false;
     try {
       hasModelReference = (await stat(referencePath)).isFile();
@@ -512,7 +514,7 @@ export function wardrobeImportApi(options = {}) {
             : `garment-${current.stages.garment.attempts}.png`;
           const garmentFile = path.join(dir, garmentName);
           const garment = { data: await readFile(garmentFile), mime: "image/png", name: "garment.png" };
-          const modelPath = path.resolve(root, setting("WARDROBE_MODEL_REFERENCE", "data/model-reference.png"));
+          const modelPath = modelReferencePath();
           let modelData;
           try {
             modelData = await readFile(modelPath);
@@ -554,6 +556,22 @@ export function wardrobeImportApi(options = {}) {
         return json(res, 200, await loadImported());
       }
       if (url.pathname === "/api/import/config" && req.method === "GET") {
+        return json(res, 200, await setupStatus());
+      }
+      if (url.pathname === "/api/import/model-reference" && req.method === "POST") {
+        const input = await body(req);
+        const image = decodeImage(input);
+        const normalizedImage = await normalizeImage(image.data);
+        const referencePath = modelReferencePath();
+        await mkdir(path.dirname(referencePath), { recursive: true });
+        const temporaryPath = `${referencePath}.${randomUUID()}.tmp`;
+        await writeFile(temporaryPath, normalizedImage);
+        try {
+          await rename(temporaryPath, referencePath);
+        } catch (error) {
+          await rm(temporaryPath, { force: true });
+          throw error;
+        }
         return json(res, 200, await setupStatus());
       }
       const wardrobeItemMatch = url.pathname.match(/^\/api\/import\/wardrobe\/(import-[a-f0-9-]{36})$/i);

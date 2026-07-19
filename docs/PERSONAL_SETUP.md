@@ -18,7 +18,7 @@ npm install
 cp .env.example .env
 ```
 
-Add an OpenAI API key to `.env`. Add a clear PNG reference photo of yourself at `data/model-reference.png`; it is used for modeled previews. Both `.env` and the entire `data/` directory are ignored by Git and stay on this Mac.
+Add an OpenAI API key to `.env`. The first time you open the importer, choose a clear full-body reference photo from the phone or computer; Wardrobe converts it to `data/model-reference.png` for modeled previews. Both `.env` and the entire `data/` directory are ignored by Git and stay on this Mac.
 
 The selected source photos and the model reference are sent to the OpenAI API when you ask the importer to analyze, extract, or model clothing. They are not served as a public website; the local database and generated library remain in `data/`.
 
@@ -66,7 +66,7 @@ Use `tailscale serve`, never `tailscale funnel`: Serve is limited to your Tailsc
 
 In Safari, open the private `https://…ts.net` URL, tap Share, choose **Add to Home Screen**, keep **Open as Web App** enabled, and tap **Add**.
 
-The installed app can choose photos from the camera roll or open the camera through **Add clothes**. Imports, metadata edits, and deletes all save to the same `data/library.json`, so the phone and Mac show the same collection.
+On the first visit, use **Add your photo** to choose the one private reference image used for modeled previews. The control then becomes **Add clothes** and can choose clothing photos from the camera roll or open the camera. Imports, metadata edits, and deletes all save to the same `data/library.json`, so the phone and Mac show the same collection.
 
 ## Back up the wardrobe
 
@@ -76,5 +76,5 @@ Back up the whole ignored `data/` directory to an encrypted personal backup. It 
 
 - **The phone shows “Saved copy”:** confirm the Mac is awake, the Wardrobe service is running, and Tailscale is connected on both devices.
 - **The phone cannot open the URL:** run `tailscale serve status` on the Mac and use the HTTPS URL it prints.
-- **Imports say setup is required:** check `OPENAI_API_KEY` in `.env` and `data/model-reference.png`, then restart the Wardrobe service.
+- **Imports say computer setup is needed:** check `OPENAI_API_KEY` in `.env`, then restart the Wardrobe service. A missing reference photo can be added directly from the phone.
 - **Port 4173 is already in use:** stop any other `npm run personal` or `npm run dev` process before starting the login service.

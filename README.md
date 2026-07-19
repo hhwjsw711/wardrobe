@@ -31,7 +31,7 @@ cp .env.example .env
 npm run dev
 ```
 
-⚠️ The importer stays disabled until you add `OPENAI_API_KEY` to `.env` and place a PNG reference photo of yourself at `data/model-reference.png`.
+⚠️ The importer stays disabled until you add `OPENAI_API_KEY` to `.env`. On first use, Wardrobe asks you to choose a private reference photo from the phone or computer and saves it locally as `data/model-reference.png`.
 
 Open [localhost:5173](http://localhost:5173).
 
@@ -51,7 +51,7 @@ Open the cloned repo in Codex and run either prompt. The import skill asks for a
 If you are setting up Wardrobe for a user, ask how they want to import their clothes:
 
 - **Codex:** Ask for a folder or camera-roll location and a model-reference PNG, then extract, model, and import the individual pieces by following [the bundled import skill](.agents/skills/import-clothes/SKILL.md). Afterward, offer to create a requested number of modeled looks with [the outfit-generation skill](.agents/skills/generate-outfits/SKILL.md).
-- **Web UI:** Help the user configure their own `OPENAI_API_KEY` and `data/model-reference.png`, then let them import through the app.
+- **Web UI:** Help the user configure their own `OPENAI_API_KEY`, then let them choose the private model-reference photo during the first import.
 
 ## What it does
 
