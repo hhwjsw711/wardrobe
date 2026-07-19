@@ -31,7 +31,27 @@ async function api(path, options) {
   return value;
 }
 
+const pause = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function uploadImage(payload) {
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try { return await api(API, { method: "POST", body: JSON.stringify(payload) }); }
+    catch (error) {
+      lastError = error;
+      if (attempt < 2) await pause(600 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
 function deriveStatus(job) {
+  if (job.kind === "upload") {
+    if (job.analysis?.status === "failed") return { tone: "error", text: "Analysis needs attention", detail: job.analysis.error || "The computer could not analyze this photo." };
+    if (job.analysis?.status === "empty") return { tone: "complete", text: "No clothing detected" };
+    if (job.analysis?.status === "processing") return { tone: "processing", text: "Finding clothes in photo" };
+    return { tone: "processing", text: "Queued on your computer" };
+  }
   const crop = job.stages?.crop;
   const garment = job.stages?.garment;
   const modeled = job.stages?.modeled;
@@ -149,52 +169,72 @@ export function WardrobeImportFlow({ onGarmentApproved, onModeledApproved }) {
   const [notice, setNotice] = useState(null);
   const [setup, setSetup] = useState(null);
   const [savingReference, setSavingReference] = useState(false);
+  const [uploading, setUploading] = useState(null);
+
+  const syncJobs = useCallback(async () => {
+    const storedJobs = await api(API);
+    const visibleJobs = storedJobs.filter((job) => job.status !== "complete" && job.stages?.crop?.status !== "rejected" && job.stages?.garment?.status !== "rejected" && job.stages?.modeled?.status !== "rejected");
+    setJobs(visibleJobs);
+    setDrafts((current) => Object.fromEntries(visibleJobs.filter((job) => job.kind !== "upload").map((job) => [job.id, current[job.id] || defaultDraft(job)])));
+    return visibleJobs;
+  }, []);
 
   useEffect(() => {
     api(CONFIG_API).then(setSetup).catch((requestError) => setSetup({ ready: false, error: requestError.message }));
-    api(API)
-      .then((storedJobs) => {
-        const visibleJobs = storedJobs.filter((job) => job.status !== "complete" && job.stages?.crop?.status !== "rejected" && job.stages?.garment?.status !== "rejected" && job.stages?.modeled?.status !== "rejected");
-        setJobs(visibleJobs);
-        setDrafts(Object.fromEntries(visibleJobs.map((job) => [job.id, defaultDraft(job)])));
-      })
-      .catch(() => {});
-  }, []);
-
-  const refresh = useCallback(async (id) => {
-    try {
-      const next = await api(`${API}/${id}`);
-      setJobs((current) => current.map((job) => job.id === id ? next : job));
-      setDrafts((current) => current[id] ? current : { ...current, [id]: defaultDraft(next) });
-    } catch (requestError) { setError(requestError.message); }
-  }, []);
+    syncJobs().catch(() => {});
+  }, [syncJobs]);
 
   useEffect(() => {
-    if (!jobs.some((job) => (job.stages?.crop?.status === "approved" && ["processing", "pending", "queued"].includes(job.stages?.garment?.status)) || ["processing", "queued"].includes(job.stages?.modeled?.status) || (job.stages?.garment?.status === "approved" && job.stages?.modeled?.status === "pending"))) return undefined;
-    const timer = setInterval(() => jobs.forEach((job) => refresh(job.id)), 900);
+    const hasBackgroundWork = jobs.some((job) => (
+      (job.kind === "upload" && ["queued", "processing"].includes(job.analysis?.status))
+      || (job.stages?.crop?.status === "approved" && ["processing", "pending", "queued"].includes(job.stages?.garment?.status))
+      || ["processing", "queued"].includes(job.stages?.modeled?.status)
+      || (job.stages?.garment?.status === "approved" && job.stages?.modeled?.status === "pending")
+    ));
+    if (!hasBackgroundWork) return undefined;
+    const timer = setInterval(() => { syncJobs().catch(() => {}); }, 1200);
     return () => clearInterval(timer);
-  }, [jobs, refresh]);
+  }, [jobs, syncJobs]);
+
+  useEffect(() => {
+    const resume = () => { if (document.visibilityState === "visible") syncJobs().catch(() => {}); };
+    document.addEventListener("visibilitychange", resume);
+    window.addEventListener("focus", resume);
+    return () => { document.removeEventListener("visibilitychange", resume); window.removeEventListener("focus", resume); };
+  }, [syncJobs]);
 
   const submitFiles = useCallback(async (files) => {
     if (!setup?.ready) { setOpen(true); return; }
     const images = [...files].filter((file) => file.type.startsWith("image/"));
     if (!images.length) return;
     setDragging(false); setError(""); setNotice(null);
-    for (const file of images) {
-      try {
-        const imageDataUrl = await fileToDataUrl(file);
-        const result = await api(API, { method: "POST", body: JSON.stringify({ imageDataUrl, metadata: { name: file.name.replace(/\.[^.]+$/, "") } }) });
-        const createdJobs = result.jobs || [result];
-        if (!createdJobs.length && result.noClothingDetected) {
-          setNotice({ tone: "complete", text: "No clothing detected", detail: `We couldn’t find a distinct wearable item in ${file.name}. Try a clearer or more tightly framed image.` });
-          setOpen(true);
-          continue;
-        }
-        setJobs((current) => [...current, ...createdJobs]);
-        setDrafts((current) => ({ ...current, ...Object.fromEntries(createdJobs.map((job) => [job.id, defaultDraft(job)])) }));
-      } catch (requestError) { setError(requestError.message); }
-    }
-  }, [setup]);
+    setUploading({ sent: 0, total: images.length });
+    let cursor = 0;
+    let sent = 0;
+    const failures = [];
+    const worker = async () => {
+      while (cursor < images.length) {
+        const file = images[cursor];
+        cursor += 1;
+        try {
+          const imageDataUrl = await fileToDataUrl(file);
+          const result = await uploadImage({ imageDataUrl, metadata: { name: file.name.replace(/\.[^.]+$/, "") } });
+          const createdJobs = result.jobs || [result];
+          const ids = new Set(createdJobs.map((job) => job.id));
+          setJobs((current) => [...current.filter((job) => !ids.has(job.id)), ...createdJobs]);
+          sent += 1;
+          setUploading({ sent, total: images.length });
+        } catch (error) { failures.push({ file: file.name, error }); }
+      }
+    };
+    try {
+      await Promise.all(Array.from({ length: Math.min(3, images.length) }, () => worker()));
+      await syncJobs();
+      if (failures.length) setError(`${failures.length} ${failures.length === 1 ? "photo" : "photos"} could not reach your computer. Choose ${failures.length === 1 ? "it" : "them"} again when the connection is stable.`);
+    } catch (requestError) {
+      setError(`Wardrobe could not refresh the queue: ${requestError.message}`);
+    } finally { setUploading(null); }
+  }, [setup, syncJobs]);
 
   const submitReference = useCallback(async (files) => {
     const image = [...files].find((file) => file.type.startsWith("image/"));
@@ -273,18 +313,28 @@ export function WardrobeImportFlow({ onGarmentApproved, onModeledApproved }) {
     finally { setBusyId(null); }
   };
 
+  const retryAnalysis = async (job) => {
+    setBusyId(job.id); setError("");
+    try {
+      const updated = await api(`${API}/${job.id}/analysis/retry`, { method: "POST" });
+      setJobs((current) => current.map((item) => item.id === job.id ? updated : item));
+    } catch (requestError) { setError(requestError.message); }
+    finally { setBusyId(null); }
+  };
+
   const active = jobs[jobs.length - 1];
   const missingApiKey = setup?.hasApiKey === false;
   const missingModelReference = setup?.hasModelReference === false;
   const setupRequired = setup?.ready === false;
   const setupLabel = missingApiKey ? "Computer setup needed" : missingModelReference ? "Add your photo" : "Setup required";
-  const activeStatus = setupRequired ? { tone: missingApiKey ? "error" : "setup", text: setupLabel } : active ? deriveStatus(active) : notice;
+  const uploadStatus = uploading ? { tone: "processing", text: `Saving ${Math.min(uploading.sent + 1, uploading.total)} of ${uploading.total} to computer` } : null;
+  const activeStatus = setupRequired ? { tone: missingApiKey ? "error" : "setup", text: setupLabel } : uploadStatus || (active ? deriveStatus(active) : notice);
   const readyCount = jobs.filter((job) => deriveStatus(job).tone === "ready").length;
   const selectedReviewJob = jobs.find((job) => job.id === selectedReviewId && (reviewStageFor(job) || hasCleanupFailure(job)));
   const reviewJob = selectedReviewJob || jobs.find((job) => reviewStageFor(job)) || jobs.find((job) => hasCleanupFailure(job)) || active;
   const reviewStage = reviewJob ? reviewStageFor(reviewJob) : null;
   const progress = 0;
-  const hasImportActivity = Boolean(jobs.length || notice || setupRequired);
+  const hasImportActivity = Boolean(jobs.length || notice || setupRequired || uploading);
 
   return (
     <>
@@ -302,7 +352,7 @@ export function WardrobeImportFlow({ onGarmentApproved, onModeledApproved }) {
             <>
               <div className={`import-progress${activeStatus?.tone !== "processing" ? " is-reviewing" : progress < 100 ? " is-indeterminate" : ""}`}><div className="import-progress__meta"><span>{activeStatus?.text}</span><span>{jobs.length} {jobs.length === 1 ? "item" : "items"}</span></div>{activeStatus?.tone === "processing" && <div className="import-progress__track"><div className="import-progress__bar" style={{ "--import-progress": `${progress}%` }} /></div>}</div>
               {reviewJob && reviewStage ? <ReviewEditor job={reviewJob} stage={reviewStage} draft={drafts[reviewJob.id] || defaultDraft(reviewJob)} setDraft={(draft) => setDrafts((current) => ({ ...current, [reviewJob.id]: draft }))} regenPrompt={regenerationPrompts[`${reviewJob.id}:${reviewStage}`] || ""} setRegenPrompt={(prompt) => setRegenerationPrompts((current) => ({ ...current, [`${reviewJob.id}:${reviewStage}`]: prompt }))} busy={busyId === reviewJob.id} onAction={(action, prompt) => perform(reviewJob, reviewStage, action, prompt)} /> : reviewJob && hasCleanupFailure(reviewJob) ? <CleanupEditor job={reviewJob} tolerance={cleanupTolerances[reviewJob.id] ?? reviewJob.stages.garment.cleanupTolerance ?? 46} setTolerance={(tolerance) => setCleanupTolerances((current) => ({ ...current, [reviewJob.id]: tolerance }))} busy={busyId === reviewJob.id} onPreview={(tolerance) => performCleanup(reviewJob, "preview", tolerance)} onAccept={() => performCleanup(reviewJob, "accept")} /> : null}
-              <div className="import-card-list">{jobs.map((job) => { const status = deriveStatus(job); const itemName = drafts[job.id]?.name || job.metadata?.name || "New piece"; const failedStage = job.stages?.garment?.status === "failed" ? "garment" : job.stages?.modeled?.status === "failed" ? "modeled" : null; return <article className={`import-card is-${status.tone}${reviewJob?.id === job.id ? " is-selected" : ""}`} key={job.id}><img className="import-card__image" src={job.stages?.garment?.assetUrl || job.stages?.garment?.failedAssetUrl || job.stages?.crop?.assetUrl || job.originalAssetUrl} alt="" /><div className="import-card__body"><h3 className="import-card__title">{itemName}</h3><p className="import-card__detail import-card__detail--status" data-tone={status.tone}>{status.tone === "error" ? status.detail : status.text}</p></div><div className="import-card__actions">{status.tone === "ready" && <button className="import-icon-button" onClick={() => { setSelectedReviewId(job.id); setOpen(true); }} aria-label={`Review ${itemName}`}><Check size={17} /></button>}{failedStage && <button className="import-button import-card__retry" disabled={busyId === job.id} onClick={() => perform(job, failedStage, "regenerate", "")}><ArrowCounterClockwise size={14} /> Retry</button>}<button className="import-icon-button import-card__delete" disabled={busyId === job.id} onClick={() => deleteJob(job)} aria-label={`Delete ${itemName} from import queue`}><Trash size={16} /></button></div></article>; })}</div>
+              <div className="import-card-list">{jobs.map((job) => { const status = deriveStatus(job); const itemName = drafts[job.id]?.name || job.metadata?.name || "New piece"; const failedStage = job.stages?.garment?.status === "failed" ? "garment" : job.stages?.modeled?.status === "failed" ? "modeled" : null; const analysisFailed = job.kind === "upload" && job.analysis?.status === "failed"; return <article className={`import-card is-${status.tone}${reviewJob?.id === job.id ? " is-selected" : ""}`} key={job.id}><img className="import-card__image" src={job.stages?.garment?.assetUrl || job.stages?.garment?.failedAssetUrl || job.stages?.crop?.assetUrl || job.originalAssetUrl} alt="" /><div className="import-card__body"><h3 className="import-card__title">{itemName}</h3><p className="import-card__detail import-card__detail--status" data-tone={status.tone}>{status.tone === "error" ? status.detail : status.text}</p></div><div className="import-card__actions">{status.tone === "ready" && <button className="import-icon-button" onClick={() => { setSelectedReviewId(job.id); setOpen(true); }} aria-label={`Review ${itemName}`}><Check size={17} /></button>}{analysisFailed && <button className="import-button import-card__retry" disabled={busyId === job.id} onClick={() => retryAnalysis(job)}><ArrowCounterClockwise size={14} /> Retry</button>}{failedStage && <button className="import-button import-card__retry" disabled={busyId === job.id} onClick={() => perform(job, failedStage, "regenerate", "")}><ArrowCounterClockwise size={14} /> Retry</button>}<button className="import-icon-button import-card__delete" disabled={busyId === job.id} onClick={() => deleteJob(job)} aria-label={`Delete ${itemName} from import queue`}><Trash size={16} /></button></div></article>; })}</div>
               <div className="import-actions"><button className="import-button" onClick={() => inputRef.current?.click()}><Plus size={14} /> Add another</button></div>
             </>
           )}

@@ -22,6 +22,8 @@ Add an OpenAI API key to `.env`. The first time you open the importer, choose a 
 
 The selected source photos and the model reference are sent to the OpenAI API when you ask the importer to analyze, extract, or model clothing. They are not served as a public website; the local database and generated library remain in `data/`.
 
+When you select clothing photos, Wardrobe first saves them to the Mac and then processes at most two API jobs at once. Once the bottom tray says the photos are queued on the computer, you can switch apps or lock the phone. Reopening Wardrobe shows the current queued, processing, failed, and ready-for-review states. Interrupted client submissions retry automatically, and unfinished Mac-side jobs resume when the Wardrobe service restarts.
+
 Start the private app:
 
 ```bash

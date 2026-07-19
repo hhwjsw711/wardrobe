@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
@@ -341,6 +341,41 @@ function stageState() {
   return { status: "pending", decision: null, attempts: 0, assetUrl: null, failedAssetUrl: null, cleanupPreviewUrl: null, cleanupTolerance: 46, cleanupDiagnostics: null, error: null, prompt: null, updatedAt: null };
 }
 
+function analysisState() {
+  return { status: "queued", attempts: 0, detectedCount: null, error: null, updatedAt: null };
+}
+
+function isUploadJob(job) {
+  return job?.kind === "upload";
+}
+
+function isRejectedJob(job) {
+  return !isUploadJob(job) && (
+    job.stages?.crop?.status === "rejected"
+    || job.stages?.garment?.status === "rejected"
+    || job.stages?.modeled?.status === "rejected"
+  );
+}
+
+async function openAIFetch(url, options) {
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetch(url, options);
+      if (attempt === 0 && (response.status === 429 || response.status >= 500)) {
+        await response.arrayBuffer();
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        continue;
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1200));
+    }
+  }
+  throw lastError;
+}
+
 async function openAIEdit({ key, baseUrl, model, prompt, images, size, background, quality }) {
   const form = new FormData();
   form.set("model", model);
@@ -353,7 +388,7 @@ async function openAIEdit({ key, baseUrl, model, prompt, images, size, backgroun
     const normalized = await normalizeImage(image.data);
     form.append("image[]", new Blob([normalized], { type: "image/png" }), image.name?.replace(/\.[^.]+$/, ".png") || `image-${index + 1}.png`);
   }
-  const response = await fetch(`${baseUrl}/images/edits`, {
+  const response = await openAIFetch(`${baseUrl}/images/edits`, {
     method: "POST", headers: { Authorization: `Bearer ${key}` }, body: form,
   });
   const result = await response.json().catch(() => ({}));
@@ -364,7 +399,7 @@ async function openAIEdit({ key, baseUrl, model, prompt, images, size, backgroun
 }
 
 async function openAIAnalyze({ key, baseUrl, model, image, mime }) {
-  const response = await fetch(`${baseUrl}/responses`, {
+  const response = await openAIFetch(`${baseUrl}/responses`, {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -392,10 +427,39 @@ export function wardrobeImportApi(options = {}) {
   let libraryAssetDir;
   let importedWrites = Promise.resolve();
   const running = new Map();
+  const pendingTasks = [];
+  let activeTasks = 0;
   const setting = (name, fallback = "") => options.env?.[name] || process.env[name] || fallback;
   const apiBaseUrl = () => setting("OPENAI_API_BASE_URL", "https://api.openai.com/v1").replace(/\/$/, "");
   const modelReferenceSetting = () => setting("WARDROBE_MODEL_REFERENCE", "data/model-reference.png");
   const modelReferencePath = () => path.resolve(root, modelReferenceSetting());
+  const taskConcurrency = () => Math.max(1, Math.min(4, Number.parseInt(setting("WARDROBE_IMPORT_CONCURRENCY", "2"), 10) || 2));
+
+  function drainTasks() {
+    while (activeTasks < taskConcurrency() && pendingTasks.length) {
+      const queued = pendingTasks.shift();
+      activeTasks += 1;
+      void Promise.resolve()
+        .then(queued.task)
+        .catch((error) => console.error("[wardrobe queue] task failed", { key: queued.key, error: error.message }))
+        .finally(() => {
+          activeTasks -= 1;
+          running.delete(queued.key);
+          queued.finish();
+          drainTasks();
+        });
+    }
+  }
+
+  function enqueueTask(key, task) {
+    if (running.has(key)) return running.get(key);
+    let finish;
+    const promise = new Promise((resolve) => { finish = resolve; });
+    running.set(key, promise);
+    pendingTasks.push({ key, task, finish });
+    drainTasks();
+    return promise;
+  }
 
   async function setupStatus() {
     const hasApiKey = Boolean(setting("OPENAI_API_KEY").trim());
@@ -482,14 +546,106 @@ export function wardrobeImportApi(options = {}) {
     });
   }
 
-  async function generate(job, stageName) {
-    const lock = `${job.id}:${stageName}`;
-    if (running.has(lock)) return running.get(lock);
-    const task = (async () => {
+  async function createDetectedJobs(sourceJob, normalizedImage, detected) {
+    const created = [];
+    for (const metadata of detected) {
+      const id = randomUUID();
+      const dir = path.join(jobsDir, id);
+      await mkdir(dir, { recursive: true });
+      const originalFile = "original.png";
+      const cropFile = "crop.png";
+      const croppedImage = await cropDetectedItem(normalizedImage, metadata.boundingBox);
+      await writeFile(path.join(dir, originalFile), normalizedImage);
+      await writeFile(path.join(dir, cropFile), croppedImage);
+      const now = new Date().toISOString();
+      const cropStage = { ...stageState(), status: "review", assetUrl: `${ASSET_ROOT}/${id}/${cropFile}`, updatedAt: now };
+      const job = {
+        id,
+        kind: "garment",
+        status: "active",
+        metadata,
+        stages: { crop: cropStage, garment: stageState(), modeled: stageState() },
+        createdAt: now,
+        updatedAt: now,
+        internal: {
+          originalFile,
+          cropFile,
+          originalMime: "image/png",
+          sourceHash: sourceJob.internal.sourceHash,
+          sourceUploadId: sourceJob.id,
+        },
+      };
+      job.originalAssetUrl = `${ASSET_ROOT}/${id}/${originalFile}`;
+      await saveJob(job);
+      created.push(job);
+    }
+    return created;
+  }
+
+  function analyzeUpload(job) {
+    const lock = `${job.id}:analysis`;
+    return enqueueTask(lock, async () => {
       const current = await loadJob(job.id);
+      if (!isUploadJob(current)) return;
+      current.analysis.status = "processing";
+      current.analysis.error = null;
+      current.analysis.attempts += 1;
+      current.analysis.updatedAt = new Date().toISOString();
+      await saveJob(current);
+      console.log("[wardrobe queue] analysis started", { id: current.id, attempt: current.analysis.attempts });
+      const createdIds = [];
+      try {
+        const sourceFile = path.join(jobsDir, current.id, current.internal.originalFile);
+        const normalizedImage = await readFile(sourceFile);
+        const key = setting("OPENAI_API_KEY");
+        if (!key) throw new Error("OPENAI_API_KEY is not configured");
+        const detected = (await openAIAnalyze({
+          key,
+          baseUrl: apiBaseUrl(),
+          model: setting("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
+          image: normalizedImage,
+          mime: "image/png",
+        })).map(normalizeMetadata);
+        if (!await loadJob(current.id)) return;
+        const created = await createDetectedJobs(current, normalizedImage, detected);
+        createdIds.push(...created.map((item) => item.id));
+        const fresh = await loadJob(current.id);
+        if (!fresh) {
+          await Promise.all(createdIds.map((id) => rm(path.join(jobsDir, id), { recursive: true, force: true })));
+          return;
+        }
+        if (created.length) {
+          await rm(path.join(jobsDir, current.id), { recursive: true, force: true });
+        } else {
+          fresh.analysis.status = "empty";
+          fresh.analysis.detectedCount = 0;
+          fresh.analysis.error = null;
+          fresh.analysis.updatedAt = new Date().toISOString();
+          await saveJob(fresh);
+        }
+        console.log("[wardrobe queue] analysis completed", { id: current.id, detected: created.length });
+      } catch (error) {
+        await Promise.all(createdIds.map((id) => rm(path.join(jobsDir, id), { recursive: true, force: true })));
+        const fresh = await loadJob(current.id);
+        if (!fresh) return;
+        fresh.analysis.status = "failed";
+        fresh.analysis.error = error.message;
+        fresh.analysis.updatedAt = new Date().toISOString();
+        await saveJob(fresh);
+        console.error("[wardrobe queue] analysis failed", { id: current.id, error: error.message });
+      }
+    });
+  }
+
+  function generate(job, stageName) {
+    const lock = `${job.id}:${stageName}`;
+    return enqueueTask(lock, async () => {
+      const current = await loadJob(job.id);
+      if (!current?.stages?.[stageName]) return;
       const stage = current.stages[stageName];
       stage.status = "processing"; stage.decision = null; stage.error = null; stage.attempts += 1; stage.updatedAt = new Date().toISOString();
       await saveJob(current);
+      console.log("[wardrobe queue] generation started", { id: current.id, stage: stageName, attempt: stage.attempts });
       let failedAssetUrl = null;
       let chromaKeyUsed = null;
       try {
@@ -528,6 +684,7 @@ export function wardrobeImportApi(options = {}) {
         }
         await writeFile(output, bytes);
         const fresh = await loadJob(current.id);
+        if (!fresh?.stages?.[stageName]) return;
         fresh.stages[stageName].status = "review";
         fresh.stages[stageName].assetUrl = `${ASSET_ROOT}/${fresh.id}/${path.basename(output)}`;
         fresh.stages[stageName].failedAssetUrl = null;
@@ -536,16 +693,17 @@ export function wardrobeImportApi(options = {}) {
         if (chromaKeyUsed) fresh.stages[stageName].chromaKey = chromaKeyUsed;
         fresh.stages[stageName].updatedAt = new Date().toISOString();
         await saveJob(fresh);
+        console.log("[wardrobe queue] generation completed", { id: current.id, stage: stageName });
       } catch (error) {
         const fresh = await loadJob(current.id);
+        if (!fresh?.stages?.[stageName]) return;
         fresh.stages[stageName].status = "failed"; fresh.stages[stageName].error = error.message; fresh.stages[stageName].updatedAt = new Date().toISOString();
         if (typeof failedAssetUrl === "string") fresh.stages[stageName].failedAssetUrl = failedAssetUrl;
         if (chromaKeyUsed) fresh.stages[stageName].chromaKey = chromaKeyUsed;
         await saveJob(fresh);
+        console.error("[wardrobe queue] generation failed", { id: current.id, stage: stageName, error: error.message });
       }
-    })().finally(() => running.delete(lock));
-    running.set(lock, task);
-    return task;
+    });
   }
 
   async function handler(req, res, next) {
@@ -629,29 +787,39 @@ export function wardrobeImportApi(options = {}) {
         const input = await body(req);
         const image = decodeImage(input);
         const normalizedImage = await normalizeImage(image.data);
-        const key = setting("OPENAI_API_KEY");
-        const detected = (await openAIAnalyze({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_VISION_MODEL", "gpt-5.4-mini"), image: normalizedImage, mime: "image/png" })).map(normalizeMetadata);
-        const jobs = [];
-        for (const metadata of detected) {
-          const id = randomUUID();
-          const dir = path.join(jobsDir, id); await mkdir(dir, { recursive: true });
-          const originalFile = "original.png";
-          const cropFile = "crop.png";
-          const croppedImage = await cropDetectedItem(normalizedImage, metadata.boundingBox);
-          await writeFile(path.join(dir, originalFile), normalizedImage);
-          await writeFile(path.join(dir, cropFile), croppedImage);
-          const now = new Date().toISOString();
-          const cropStage = { ...stageState(), status: "review", assetUrl: `${ASSET_ROOT}/${id}/${cropFile}`, updatedAt: now };
-          const job = { id, status: "active", metadata, stages: { crop: cropStage, garment: stageState(), modeled: stageState() }, createdAt: now, updatedAt: now, internal: { originalFile, cropFile, originalMime: "image/png" } };
-          job.originalAssetUrl = `${ASSET_ROOT}/${id}/${originalFile}`;
-          await saveJob(job); jobs.push(publicJob(job));
-        }
-        return json(res, 202, { jobs, noClothingDetected: jobs.length === 0 });
+        const sourceHash = createHash("sha256").update(normalizedImage).digest("hex");
+        const existingIds = await readdir(jobsDir).catch(() => []);
+        const existing = (await Promise.all(existingIds.map((id) => loadJob(id))))
+          .filter((job) => job?.internal?.sourceHash === sourceHash);
+        if (existing.length) return json(res, 202, { jobs: existing.map(publicJob), deduplicated: true });
+
+        const id = randomUUID();
+        const dir = path.join(jobsDir, id);
+        const originalFile = "original.png";
+        const now = new Date().toISOString();
+        const sourceName = typeof input.metadata?.name === "string" ? input.metadata.name.trim().slice(0, 120) : "Wardrobe photo";
+        const job = {
+          id,
+          kind: "upload",
+          status: "active",
+          metadata: { name: sourceName || "Wardrobe photo" },
+          analysis: analysisState(),
+          stages: {},
+          originalAssetUrl: `${ASSET_ROOT}/${id}/${originalFile}`,
+          createdAt: now,
+          updatedAt: now,
+          internal: { originalFile, originalMime: "image/png", sourceHash },
+        };
+        await mkdir(dir, { recursive: true });
+        await writeFile(path.join(dir, originalFile), normalizedImage);
+        await saveJob(job);
+        void analyzeUpload(job);
+        return json(res, 202, { jobs: [publicJob(job)] });
       }
       if (url.pathname === API_ROOT && req.method === "GET") {
         const ids = await readdir(jobsDir).catch(() => []);
         const loadedJobs = (await Promise.all(ids.map((id) => loadJob(id)))).filter(Boolean);
-        const hiddenJobs = loadedJobs.filter((job) => job.status === "complete" || job.stages.crop?.status === "rejected" || job.stages.garment.status === "rejected" || job.stages.modeled.status === "rejected");
+        const hiddenJobs = loadedJobs.filter((job) => job.status === "complete" || isRejectedJob(job));
         await Promise.all(hiddenJobs.map((job) => rm(path.join(jobsDir, job.id), { recursive: true, force: true })));
         const jobs = loadedJobs.filter((job) => !hiddenJobs.includes(job)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
         return json(res, 200, jobs.map(publicJob));
@@ -665,6 +833,18 @@ export function wardrobeImportApi(options = {}) {
       if (!action && req.method === "DELETE") {
         await rm(path.join(jobsDir, job.id), { recursive: true, force: true });
         return json(res, 200, { deleted: true, id: job.id });
+      }
+      if (isUploadJob(job)) {
+        if (action === "analysis/retry" && req.method === "POST") {
+          if (job.analysis.status !== "failed") throw Object.assign(new Error("Analysis is not ready to retry"), { status: 409 });
+          job.analysis.status = "queued";
+          job.analysis.error = null;
+          job.analysis.updatedAt = new Date().toISOString();
+          await saveJob(job);
+          void analyzeUpload(job);
+          return json(res, 202, publicJob(job));
+        }
+        return json(res, 409, { error: "The uploaded photo is still being analyzed" });
       }
       if (action === "metadata" && (req.method === "PATCH" || req.method === "PUT")) {
         const input = await body(req);
@@ -726,6 +906,8 @@ export function wardrobeImportApi(options = {}) {
         const startGarment = stageName === "crop" && decision === "approve" && job.stages.garment.status === "pending";
         const startModeled = stageName === "garment" && decision === "approve" && job.stages.modeled.status === "pending";
         if (stageName === "modeled" && decision === "approve") job.status = "complete";
+        if (startGarment) job.stages.garment.status = "queued";
+        if (startModeled) job.stages.modeled.status = "queued";
         await saveJob(job);
         if (decision === "approve" && stageName !== "crop") {
           try {
@@ -767,6 +949,15 @@ export function wardrobeImportApi(options = {}) {
       for (const id of ids) {
         const job = await loadJob(id);
         if (!job) continue;
+        if (isUploadJob(job)) {
+          if (["queued", "processing"].includes(job.analysis.status)) {
+            job.analysis.status = "queued";
+            job.analysis.error = null;
+            await saveJob(job);
+            void analyzeUpload(job);
+          }
+          continue;
+        }
         if (job.status === "complete") {
           try {
             await persistImported(job, true);
@@ -780,17 +971,17 @@ export function wardrobeImportApi(options = {}) {
           }
           continue;
         }
-        if (job.stages.crop?.status === "rejected" || job.stages.garment.status === "rejected" || job.stages.modeled.status === "rejected") {
+        if (isRejectedJob(job)) {
           await rm(path.join(jobsDir, job.id), { recursive: true, force: true });
           continue;
         }
         if (job.stages.crop && job.stages.crop.status !== "approved") continue;
         if (["processing", "queued"].includes(job.stages.garment.status)) {
-          job.stages.garment.status = "pending";
+          job.stages.garment.status = "queued";
           await saveJob(job);
           void generate(job, "garment");
         } else if (job.stages.garment.status === "approved" && ["pending", "processing", "queued"].includes(job.stages.modeled.status)) {
-          job.stages.modeled.status = "pending";
+          job.stages.modeled.status = "queued";
           await saveJob(job);
           void generate(job, "modeled");
         }

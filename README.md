@@ -58,6 +58,7 @@ If you are setting up Wardrobe for a user, ask how they want to import their clo
 - Detects every garment in a photo with the OpenAI Responses API
 - Extracts clean product cutouts with the OpenAI Images API
 - Generates an optional modeled editorial preview
+- Saves phone uploads on the computer before queueing API work, then resumes unfinished jobs after restarts
 - Keeps originals, jobs, generated images, and the JSON database local in `data/`
 - Supports drag, drop, paste, editing, review, regeneration, and approval
 
@@ -69,6 +70,7 @@ If you are setting up Wardrobe for a user, ask how they want to import their clo
 | `OPENAI_VISION_MODEL` | `gpt-5.4-mini` |
 | `OPENAI_IMAGE_MODEL` | `gpt-image-2` |
 | `OPENAI_IMAGE_QUALITY` | `high` |
+| `WARDROBE_IMPORT_CONCURRENCY` | `2` |
 | `WARDROBE_MODEL_REFERENCE` | `data/model-reference.png` |
 | `WARDROBE_DATA_DIR` | `data` |
 
