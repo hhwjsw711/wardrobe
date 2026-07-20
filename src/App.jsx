@@ -1297,8 +1297,6 @@ export function App() {
         </header>
 
         {error && <p className="status error">{error}</p>}
-        {!error && loading && <p className="status">Loading wardrobe</p>}
-        {!error && !loading && !items.length && <p className="status empty">Tap "Add clothes" and choose a photo to start your wardrobe.</p>}
 
         {isOutfitsView ? (
           <>
@@ -1322,7 +1320,7 @@ export function App() {
         ) : (
           <>
             {!error && loading && <p className="status">Loading wardrobe</p>}
-            {!error && !loading && !items.length && <p className="status empty">Drop, paste, or add a photo to import your first piece.</p>}
+            {!error && !loading && !items.length && <p className="status empty">Tap "Add clothes" and choose a photo to start your wardrobe.</p>}
 
             {!!items.length && (
               <section className="gallery-grid" aria-label={`${TYPE_MAP[activeType]?.label || "All"} wardrobe items`}>

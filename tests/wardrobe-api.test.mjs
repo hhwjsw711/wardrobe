@@ -515,8 +515,10 @@ test("queued analysis resumes when the Wardrobe service restarts", async (contex
   });
 
   const resumed = await waitFor(async () => {
-    const jobs = await (await fetch(`${baseUrl}/api/import/jobs`)).json();
-    return jobs.find((job) => job.id === uploadId && job.analysis.status === "empty");
+    const response = await fetch(`${baseUrl}/api/import/jobs`);
+    const jobs = await response.json();
+    if (!Array.isArray(jobs)) return false;
+    return jobs.find((job) => job.id === uploadId && job.analysis?.status === "empty");
   });
   assert.equal(resumed.analysis.attempts, 2);
   assert.equal(resumed.analysis.detectedCount, 0);
