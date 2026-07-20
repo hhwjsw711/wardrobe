@@ -1,8 +1,12 @@
-const CACHE = "open-wardrobe-shell-v2";
-const IMAGE_CACHE = "wardrobe-images-v2";
+const CACHE = "open-wardrobe-shell-v3";
+const IMAGE_CACHE = "wardrobe-images-v3";
 const ACTIVE_CACHES = new Set([CACHE, IMAGE_CACHE]);
 const MAX_IMAGE_ENTRIES = 800;
 const SHELL = ["/", "/manifest.webmanifest"];
+
+// Convex storage URL pattern — images served from the Convex cloud domain
+// e.g. https://xxx.convex.cloud/api/storage/xxx
+const CONVEX_STORAGE_HOST_RE = /\.convex\.cloud$/;
 
 async function trimImages(cache) {
   const keys = await cache.keys();
@@ -48,10 +52,29 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   const url = new URL(request.url);
-  if (request.method !== "GET" || url.origin !== self.location.origin) return;
+  if (request.method !== "GET") return;
+
+  // Cache Convex storage images (cross-origin from Convex cloud)
+  const isConvexImage = CONVEX_STORAGE_HOST_RE.test(url.host) && url.pathname.startsWith("/api/storage/");
+  if (isConvexImage) {
+    event.respondWith(caches.open(IMAGE_CACHE).then(async (cache) => {
+      const cached = await cache.match(request);
+      const update = fetchAndCacheImage(request, cache);
+      if (cached) {
+        event.waitUntil(update.catch(() => undefined));
+        return cached;
+      }
+      return update;
+    }));
+    return;
+  }
+
+  // Same-origin: skip non-GET and API routes (except old library images for compat)
+  if (url.origin !== self.location.origin) return;
   const isLibraryImage = url.pathname.startsWith("/api/import/library/");
   if (url.pathname.startsWith("/api/") && !isLibraryImage) return;
 
+  // Cache image processing + old library images
   if (url.pathname.startsWith("/_ipx/") || isLibraryImage) {
     event.respondWith(caches.open(IMAGE_CACHE).then(async (cache) => {
       const cached = await cache.match(request);
