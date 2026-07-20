@@ -98,11 +98,12 @@ export const addWardrobeItem = mutation({
     name: v.string(),
     part: v.string(),
     color: v.string(),
-    secondaryColor: v.optional(v.string()),
+    secondaryColor: v.optional(v.union(v.string(), v.null())),
     tags: v.array(v.string()),
     garmentStorageId: v.optional(v.id("_storage")),
     modeledStorageId: v.optional(v.id("_storage")),
     sourceStorageId: v.optional(v.id("_storage")),
+    importJobId: v.optional(v.string()),
     brand: v.optional(v.string()),
     productName: v.optional(v.string()),
     productColorway: v.optional(v.string()),
@@ -120,7 +121,9 @@ export const addWardrobeItem = mutation({
     const name = args.name.slice(0, 120);
     const tags = args.tags.slice(0, 12).map((t) => t.slice(0, 40).toLowerCase());
     const color = args.color.toLowerCase();
-    const secondaryColor = args.secondaryColor?.toLowerCase();
+    const secondaryColor = typeof args.secondaryColor === "string"
+      ? args.secondaryColor.toLowerCase()
+      : args.secondaryColor;
 
     return ctx.db.insert("wardrobeItems", {
       userId,
@@ -132,6 +135,7 @@ export const addWardrobeItem = mutation({
       garmentStorageId: args.garmentStorageId,
       modeledStorageId: args.modeledStorageId,
       sourceStorageId: args.sourceStorageId,
+      importJobId: args.importJobId,
       brand: args.brand,
       productName: args.productName,
       productColorway: args.productColorway,
@@ -151,8 +155,11 @@ export const updateWardrobeItem = mutation({
     name: v.optional(v.string()),
     part: v.optional(v.string()),
     color: v.optional(v.string()),
-    secondaryColor: v.optional(v.string()),
+    secondaryColor: v.optional(v.union(v.string(), v.null())),
     tags: v.optional(v.array(v.string())),
+    garmentStorageId: v.optional(v.id("_storage")),
+    modeledStorageId: v.optional(v.id("_storage")),
+    sourceStorageId: v.optional(v.id("_storage")),
     brand: v.optional(v.string()),
     productName: v.optional(v.string()),
     productColorway: v.optional(v.string()),
@@ -173,7 +180,7 @@ export const updateWardrobeItem = mutation({
     if (updates.name) updates.name = updates.name.slice(0, 120);
     if (updates.tags) updates.tags = updates.tags.slice(0, 12).map((t) => t.slice(0, 40).toLowerCase());
     if (updates.color) updates.color = updates.color.toLowerCase();
-    if (updates.secondaryColor) updates.secondaryColor = updates.secondaryColor.toLowerCase();
+    if (typeof updates.secondaryColor === "string") updates.secondaryColor = updates.secondaryColor.toLowerCase();
     if (updates.part) updates.part = updates.part as any;
     if (updates.productConfidence) updates.productConfidence = updates.productConfidence as any;
     await ctx.db.patch(id, updates);
@@ -377,6 +384,18 @@ export const productMatch = action({
     if (confidence === "exact" && (!parsed.brand || !parsed.productName || !parsed.sourceUrl)) {
       confidence = "likely";
     }
+
+    // Save results to the item in DB
+    await ctx.db.patch(itemId, {
+      brand: parsed.brand,
+      productName: parsed.productName,
+      productColorway: parsed.colorway,
+      productUrl: parsed.sourceUrl,
+      productConfidence: confidence as any,
+      productEvidence: parsed.identifyingFeatures?.slice(0, 6) || [],
+      productSources: sources.slice(0, 8),
+      productMatchSummary: parsed.summary,
+    });
 
     return {
       brand: parsed.brand,

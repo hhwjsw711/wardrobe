@@ -178,7 +178,7 @@ export const createItemPlaceholder = mutation({
     name: v.string(),
     part: v.string(),
     color: v.string(),
-    secondaryColor: v.optional(v.string()),
+    secondaryColor: v.optional(v.union(v.string(), v.null())),
     tags: v.array(v.string()),
     sourceStorageId: v.id("_storage"),
   },

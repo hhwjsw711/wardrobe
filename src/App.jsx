@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowSquareOut, ArrowsClockwise, Check, CoatHanger, MagnifyingGlass, Plus, SpinnerGap, Trash, X } from "@phosphor-icons/react";
 import { WardrobeImportFlow } from "./import-flow.jsx";
 import { OptimizedImage } from "./OptimizedImage.jsx";
+import { useConvexWardrobe, useConvexOutfits, useConvexImport } from "./hooks/useConvex.js";
 
-const SNAPSHOT_KEY = "open-wardrobe-snapshot-v1";
 
 const TYPES = [
   { id: "all", label: "All" },
@@ -17,26 +17,6 @@ const TYPES = [
 
 const TYPE_MAP = Object.fromEntries(TYPES.map((type) => [type.id, type]));
 const TYPE_ORDER = Object.fromEntries(TYPES.slice(1).map((type, index) => [type.id, index]));
-
-
-function readSnapshot() {
-  try {
-    const stored = localStorage.getItem(SNAPSHOT_KEY);
-    if (stored === null) return null;
-    const value = JSON.parse(stored);
-    return Array.isArray(value) ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function persistSnapshot(items) {
-  try {
-    localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(items));
-  } catch {
-    // The server remains authoritative when browser storage is unavailable.
-  }
-}
 
 function rgbToHex(red, green, blue) {
   return `#${[red, green, blue].map((value) => Math.max(0, Math.min(255, value)).toString(16).padStart(2, "0")).join("")}`;
@@ -1018,60 +998,37 @@ function OutfitCreator({ items, onCancel, onCreate }) {
 }
 
 export function App() {
-  const [items, setItems] = useState([]);
+  // ── Convex-backed data ──
+  const wardrobe = useConvexWardrobe();
+  const outfitsHook = useConvexOutfits();
+  const importHook = useConvexImport();
+
+  const items = wardrobe.items;
+  const loading = wardrobe.loading;
+  const outfits = outfitsHook.outfits;
+  const outfitsLoading = outfitsHook.loading;
+
+  // ── UI state ──
   const [activeType, setActiveType] = useState(() => {
     if (typeof window === "undefined") return "all";
     const hash = window.location.hash.slice(1);
     return TYPES.some((t) => t.id === hash) ? hash : "all";
   });
   const [selectedId, setSelectedId] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [connection, setConnection] = useState("connecting");
-
-  const loadWardrobe = useCallback(async ({ silent = false } = {}) => {
-    if (!silent) setLoading(true);
-    try {
-      const response = await fetch("/api/import/wardrobe", { cache: "no-store" });
-      if (!response.ok) throw new Error("Could not reach the wardrobe on your computer.");
-      const loadedItems = await response.json();
-      setItems(loadedItems);
-      persistSnapshot(loadedItems);
-      setConnection("connected");
-      setError("");
-    } catch (requestError) {
-      const snapshot = readSnapshot();
-      if (snapshot) setItems((current) => current.length ? current : snapshot);
-      setConnection("saved");
-      if (!silent && !snapshot) setError(requestError.message);
-    } finally {
-      if (!silent) setLoading(false);
-    }
-  }, []);
-
-  // Outfit state
-  const [outfits, setOutfits] = useState([]);
-  const [outfitsLoading, setOutfitsLoading] = useState(false);
   const [selectedOutfitId, setSelectedOutfitId] = useState(null);
   const [showCreator, setShowCreator] = useState(false);
 
-  useEffect(() => {
-    loadWardrobe();
-  }, [loadWardrobe]);
+  // Connection status derived from Convex loading state
+  const connection = loading ? "connecting" : "connected";
 
-  useEffect(() => {
-    const syncWhenVisible = () => {
-      if (document.visibilityState === "visible" && !selectedId) loadWardrobe({ silent: true });
-    };
-    const timer = setInterval(syncWhenVisible, 30 * 1000);
-    window.addEventListener("focus", syncWhenVisible);
-    document.addEventListener("visibilitychange", syncWhenVisible);
-    return () => {
-      clearInterval(timer);
-      window.removeEventListener("focus", syncWhenVisible);
-      document.removeEventListener("visibilitychange", syncWhenVisible);
-    };
-  }, [loadWardrobe, selectedId]);
+  // Ref for latest items (used in identifyProduct + import bridge)
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+
+  // ── Derived data ──
+  // No more loadWardrobe / loadOutfits / sync timer / polling —
+  // Convex real-time subscriptions handle everything.
 
   const selectedItem = items.find((item) => item.id === selectedId) || null;
 
@@ -1092,142 +1049,105 @@ export function App() {
     if (typeof window !== "undefined") window.location.hash = typeId;
   };
 
+  // ── Wardrobe actions ──
+
   const saveItem = async (updatedItem) => {
-    let response;
     try {
-      response = await fetch(`/api/import/wardrobe/${updatedItem.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: updatedItem.name,
-          part: updatedItem.part,
-          color: updatedItem.color,
-          secondaryColor: updatedItem.secondaryColor,
-          tags: updatedItem.tags,
-        }),
+      await wardrobe.saveItem(updatedItem.id, {
+        name: updatedItem.name,
+        part: updatedItem.part,
+        color: updatedItem.color,
+        secondaryColor: updatedItem.secondaryColor,
+        tags: updatedItem.tags,
       });
-    } catch {
-      setConnection("saved");
-      throw new Error("Connect to the wardrobe on your computer, then save again.");
+      return updatedItem; // Return for ItemViewer draft reset
+    } catch (requestError) {
+      throw new Error(requestError.message || "Could not save this piece.");
     }
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(result.error || "Could not save this piece.");
-    setItems((current) => {
-      const next = current.map((item) => item.id === result.id ? result : item);
-      persistSnapshot(next);
-      return next;
-    });
-    setConnection("connected");
-    return result;
   };
 
   const deleteItem = async (id) => {
-    let response;
     try {
-      response = await fetch(`/api/import/wardrobe/${id}`, { method: "DELETE" });
-    } catch {
-      setConnection("saved");
-      throw new Error("Connect to the wardrobe on your computer, then delete again.");
+      await wardrobe.deleteItem(id);
+    } catch (requestError) {
+      throw new Error(requestError.message || "Could not delete this piece.");
     }
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok && response.status !== 404) throw new Error(result.error || "Could not delete this piece.");
-    setItems((current) => {
-      const next = current.filter((item) => item.id !== id);
-      persistSnapshot(next);
-      return next;
-    });
     setSelectedId(null);
-    setConnection("connected");
   };
 
   const identifyProduct = async (id) => {
-    let response;
     try {
-      response = await fetch(`/api/import/wardrobe/${id}/product-match`, { method: "POST" });
-    } catch {
-      setConnection("saved");
-      throw new Error("Connect to the wardrobe on your computer, then check the product again.");
+      const result = await wardrobe.identifyProduct(id);
+      // Combine product match result with current item data
+      const currentItem = itemsRef.current.find((i) => i.id === id);
+      return currentItem ? { ...currentItem, ...result } : result;
+    } catch (requestError) {
+      throw new Error(requestError.message || "Could not identify this product.");
     }
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(result.error || "Could not identify this product.");
-    setItems((current) => {
-      const next = current.map((item) => item.id === result.id ? result : item);
-      persistSnapshot(next);
-      return next;
-    });
-    setConnection("connected");
-    return result;
   };
 
-  const addImportedItem = useCallback((newItem) => {
-    setItems((current) => {
-      const next = current.some((item) => item.id === newItem.id) ? current : [...current, newItem];
-      persistSnapshot(next);
-      return next;
-    });
-    setConnection("connected");
-  }, []);
+  // ── Import bridge ──
+  // Import flow still uses old Vite API. When items are approved,
+  // we bridge them to Convex by fetching images and creating DB records.
 
-  const attachImportedModeledImage = useCallback((jobId, modeledImage) => {
-    const id = `import-${jobId}`;
-    setItems((current) => {
-      const next = current.map((item) => item.id === id ? { ...item, modeledImage } : item);
-      persistSnapshot(next);
-      return next;
-    });
-  }, []);
-
-  // ── Outfit logic ──
-
-  const loadOutfits = useCallback(async () => {
-    setOutfitsLoading(true);
+  const addImportedItem = useCallback(async (newItem) => {
     try {
-      const response = await fetch("/api/import/outfits", { cache: "no-store" });
-      if (!response.ok) throw new Error("Could not load outfits.");
-      const data = await response.json();
-      setOutfits(data);
+      const imageResp = await fetch(newItem.image);
+      if (!imageResp.ok) return;
+      const imageBlob = await imageResp.blob();
+      const uploadUrl = await importHook.generateUploadUrl();
+      const uploadResp = await fetch(uploadUrl, {
+        method: "POST",
+        headers: { "Content-Type": imageBlob.type || "image/png" },
+        body: imageBlob,
+      });
+      const { storageId } = await uploadResp.json();
+      await wardrobe.addItem({
+        name: newItem.name,
+        part: newItem.part,
+        color: newItem.color,
+        secondaryColor: newItem.secondaryColor || undefined,
+        tags: newItem.tags || [],
+        garmentStorageId: storageId,
+        importJobId: newItem.importJobId,
+        brand: newItem.brand,
+        productName: newItem.productName,
+        productUrl: newItem.productUrl,
+        productConfidence: newItem.productConfidence,
+        productEvidence: newItem.productEvidence,
+      });
     } catch (err) {
-      setError(err.message);
-    } finally {
-      setOutfitsLoading(false);
+      console.error("Failed to sync imported item to Convex:", err);
     }
-  }, []);
+  }, [importHook.generateUploadUrl, wardrobe.addItem]);
 
-  // Load outfits when switching to outfits tab
-  useEffect(() => {
-    if (activeType === "outfits" && outfits.length === 0 && !outfitsLoading) {
-      loadOutfits();
+  const attachImportedModeledImage = useCallback(async (jobId, modeledImageUrl) => {
+    try {
+      const item = itemsRef.current.find((i) => i.importJobId === jobId);
+      if (!item) return;
+      const resp = await fetch(modeledImageUrl);
+      if (!resp.ok) return;
+      const blob = await resp.blob();
+      const uploadUrl = await importHook.generateUploadUrl();
+      const uploadResp = await fetch(uploadUrl, {
+        method: "POST",
+        headers: { "Content-Type": blob.type || "image/png" },
+        body: blob,
+      });
+      const { storageId } = await uploadResp.json();
+      await wardrobe.saveItem(item.id, { modeledStorageId: storageId });
+    } catch (err) {
+      console.error("Failed to attach modeled image:", err);
     }
-  }, [activeType, outfits.length, outfitsLoading, loadOutfits]);
+  }, [importHook.generateUploadUrl, wardrobe.saveItem]);
 
-  // Poll for generating outfits. Depend only on the boolean (not the whole
-  // outfits array) so the interval isn't torn down + recreated every poll.
-  const hasGeneratingOutfit = outfits.some((o) => o.status === "generating");
-  useEffect(() => {
-    if (activeType !== "outfits" || !hasGeneratingOutfit) return;
-    const interval = setInterval(() => {
-      fetch("/api/import/outfits", { cache: "no-store" })
-        .then((r) => r.ok ? r.json() : [])
-        .then((data) => setOutfits(data))
-        .catch(() => {});
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [activeType, hasGeneratingOutfit]);
+  // ── Outfit actions ──
+  // Convex real-time subscriptions replace loadOutfits + polling entirely.
 
   const createOutfit = async ({ name, garmentIds }) => {
     setShowCreator(false);
     try {
-      const response = await fetch("/api/import/outfits", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, garmentIds }),
-      });
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.error || "Could not create outfit");
-      }
-      const newOutfit = await response.json();
-      setOutfits((current) => [...current, newOutfit]);
+      await outfitsHook.createOutfit({ name, garmentIds });
     } catch (err) {
       setError(err.message);
     }
@@ -1235,22 +1155,17 @@ export function App() {
 
   const deleteOutfit = async (id) => {
     try {
-      const response = await fetch(`/api/import/outfits/${id}`, { method: "DELETE" });
-      if (!response.ok && response.status !== 404) throw new Error("Could not delete outfit.");
+      await outfitsHook.deleteOutfit(id);
     } catch (err) {
       setError(err.message);
       return;
     }
-    setOutfits((current) => current.filter((o) => o.id !== id));
     setSelectedOutfitId(null);
   };
 
   const regenerateOutfit = async (id) => {
     try {
-      const response = await fetch(`/api/import/outfits/${id}/regenerate`, { method: "POST" });
-      if (!response.ok) throw new Error("Could not regenerate outfit.");
-      const updated = await response.json();
-      setOutfits((current) => current.map((o) => o.id === id ? { ...updated, garments: o.garments } : o));
+      await outfitsHook.regenerateOutfit(id);
     } catch (err) {
       setError(err.message);
     }
@@ -1272,7 +1187,7 @@ export function App() {
             <div className="gallery-status">
               <p className={`connection-status is-${connection}`}>
                 <span aria-hidden="true" />
-                {connection === "connected" ? "Computer connected" : connection === "saved" ? "Saved copy" : "Connecting"}
+                {connection === "connected" ? "Cloud synced" : "Connecting"}
               </p>
               <p className="piece-count">
                 {isOutfitsView

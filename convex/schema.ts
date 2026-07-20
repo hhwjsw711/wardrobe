@@ -49,11 +49,12 @@ export default defineSchema({
     name: v.string(),                    // max 120 chars
     part: Part,
     color: v.string(),                   // hex "#rrggbb" lowercase
-    secondaryColor: v.optional(v.string()),
+    secondaryColor: v.optional(v.union(v.string(), v.null())),
     tags: v.array(v.string()),           // max 12, each ≤40 chars
     garmentStorageId: v.optional(v.id("_storage")),  // cutout image — optional for MCP text-only creation
     modeledStorageId: v.optional(v.id("_storage")),  // editorial modeled photo
     sourceStorageId: v.optional(v.id("_storage")),    // original uploaded photo
+    importJobId: v.optional(v.string()),              // bridge: maps to old import-job-api job ID
     // Product match fields
     brand: v.optional(v.string()),
     productName: v.optional(v.string()),
