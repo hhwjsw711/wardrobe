@@ -8,7 +8,17 @@
  * (_id → id, garmentUrl → image, etc.), so component logic stays unchanged.
  */
 import { useQuery, useMutation, useAction } from "convex/react";
+import { useMemo } from "react";
 import { api } from "../../convex/_generated/api";
+
+// Module-level constants so loading-state placeholders keep a stable
+// reference across renders. Without this, `rawData ?? []` creates a
+// fresh array every render, which makes downstream useEffect hooks
+// that depend on the array fire endlessly (Maximum update depth
+// exceeded).
+const EMPTY_ARRAY = [];
+const EMPTY_IMPORT_JOBS = EMPTY_ARRAY;
+const EMPTY_MODEL_REFS = EMPTY_ARRAY;
 
 // ─── Data Shape Mappers ──────────────────────────────────────────
 
@@ -77,7 +87,10 @@ function mapOutfit(outfit) {
  *   identifyProduct: (id) => Promise   (replaces POST product-match)
  */
 export function useConvexWardrobe() {
-  const rawItems = useQuery(api.wardrobe.getWardrobe);
+  // Skip the query until authenticated — otherwise the server throws
+  // "Unauthorized: sign in required" and React unmounts the tree.
+  const { isAuthenticated } = useConvexAuth();
+  const rawItems = useQuery(api.wardrobe.getWardrobe, isAuthenticated ? {} : "skip");
   const updateItem = useMutation(api.wardrobe.updateWardrobeItem);
   const removeItem = useMutation(api.wardrobe.deleteWardrobeItem);
   const addItem = useMutation(api.wardrobe.addWardrobeItem);
@@ -128,7 +141,8 @@ export function useConvexWardrobe() {
  *   regenerateOutfit: (id) => void
  */
 export function useConvexOutfits() {
-  const rawOutfits = useQuery(api.outfits.getOutfits);
+  const { isAuthenticated } = useConvexAuth();
+  const rawOutfits = useQuery(api.outfits.getOutfits, isAuthenticated ? {} : "skip");
   const create = useMutation(api.outfits.createOutfit);
   const remove = useMutation(api.outfits.deleteOutfit);
   const regenerate = useMutation(api.outfits.regenerateOutfit);
@@ -195,9 +209,10 @@ export function useConvexImport() {
  *   deleteModelReference: (refId) => Promise
  */
 export function useConvexImportFlow() {
-  const rawJobs = useQuery(api.import.getImportJobs);
-  const setupStatus = useQuery(api.import.getSetupStatus);
-  const rawModelRefs = useQuery(api.import.getModelReferences);
+  const { isAuthenticated } = useConvexAuth();
+  const rawJobs = useQuery(api.import.getImportJobs, isAuthenticated ? {} : "skip");
+  const setupStatus = useQuery(api.import.getSetupStatus, isAuthenticated ? {} : "skip");
+  const rawModelRefs = useQuery(api.import.getModelReferences, isAuthenticated ? {} : "skip");
 
   const generateUploadUrl = useMutation(api.wardrobe.generateUploadUrl);
   const startImport = useMutation(api.import.startImport);
@@ -210,9 +225,10 @@ export function useConvexImportFlow() {
   const saveRef = useMutation(api.import.saveModelReference);
   const deleteRef = useMutation(api.import.deleteModelReference);
 
-  const jobs = rawJobs ?? [];
-  const setup = setupStatus ?? null;
-  const modelReferences = rawModelRefs ?? [];
+  // Stable references for loading state — see EMPTY_ARRAY comment above.
+  const jobs = useMemo(() => rawJobs ?? EMPTY_IMPORT_JOBS, [rawJobs]);
+  const setup = useMemo(() => setupStatus ?? null, [setupStatus]);
+  const modelReferences = useMemo(() => rawModelRefs ?? EMPTY_MODEL_REFS, [rawModelRefs]);
 
   return {
     jobs,

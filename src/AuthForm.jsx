@@ -23,12 +23,13 @@ export function AuthForm() {
     try {
       // Convex Auth's useAuthActions only exposes signIn. Sign-up is
       // performed by calling signIn with the Password provider and a
-      // `flow: "signUp"` param.
+      // `flow: "signUp"` param. The Password provider REQUIRES `flow`
+      // on every call, so we pass "signIn" for the login path.
       await signIn("password", {
         email: email.trim(),
         password,
         name: name.trim() || undefined,
-        ...(isSignUp ? { flow: "signUp" } : {}),
+        flow: isSignUp ? "signUp" : "signIn",
       });
     } catch (err) {
       const message = err.message || "Could not sign in. Check your credentials.";
