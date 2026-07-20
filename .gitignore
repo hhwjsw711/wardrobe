@@ -8,3 +8,4 @@ dist/
 data/
 .temp/
 *.docx
+convex/_generated/

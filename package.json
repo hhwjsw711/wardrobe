@@ -7,6 +7,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:convex": "convex dev",
+    "dev:all": "convex dev & vite",
     "build": "vite build",
     "preview": "vite preview",
     "personal": "npm run build && vite preview --host 127.0.0.1 --port 4173 --strictPort",
@@ -16,10 +18,13 @@
     "check": "npm test && npm run build"
   },
   "dependencies": {
+    "@auth/core": "^0.41.1",
+    "@convex-dev/auth": "^0.0.94",
     "@fontsource-variable/instrument-sans": "^5.2.8",
     "@phosphor-icons/react": "^2.1.10",
     "@unpic/react": "^1.0.2",
     "@vitejs/plugin-react": "5.0.4",
+    "convex": "^1.42.3",
     "ipx": "^3.1.1",
     "react": "19.2.0",
     "react-dom": "19.2.0",
