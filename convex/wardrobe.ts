@@ -100,7 +100,7 @@ export const addWardrobeItem = mutation({
     color: v.string(),
     secondaryColor: v.optional(v.string()),
     tags: v.array(v.string()),
-    garmentStorageId: v.id("_storage"),
+    garmentStorageId: v.optional(v.id("_storage")),
     modeledStorageId: v.optional(v.id("_storage")),
     sourceStorageId: v.optional(v.id("_storage")),
     brand: v.optional(v.string()),

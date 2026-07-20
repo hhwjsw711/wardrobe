@@ -51,7 +51,7 @@ export default defineSchema({
     color: v.string(),                   // hex "#rrggbb" lowercase
     secondaryColor: v.optional(v.string()),
     tags: v.array(v.string()),           // max 12, each ≤40 chars
-    garmentStorageId: v.id("_storage"),   // cutout image on chroma bg → cleaned
+    garmentStorageId: v.optional(v.id("_storage")),  // cutout image — optional for MCP text-only creation
     modeledStorageId: v.optional(v.id("_storage")),  // editorial modeled photo
     sourceStorageId: v.optional(v.id("_storage")),    // original uploaded photo
     // Product match fields
