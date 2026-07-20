@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
-import { requireAuthedUserId, ensureUserFields } from "./helpers";
+import { requireAuthedUserId, ensureUserFields, getOrCreateProfile } from "./helpers";
 
 // ─── Constants ──────────────────────────────────────────────────
 
@@ -53,7 +53,8 @@ export const deductTryon = mutation({
     }
 
     const newBalance = user.creditBalance - CREDITS_TRYON;
-    await ctx.db.patch(userId, { creditBalance: newBalance });
+    const profile = await getOrCreateProfile(ctx, userId);
+    await ctx.db.patch(profile._id, { creditBalance: newBalance });
     await ctx.db.insert("creditLedger", {
       userId,
       delta: -CREDITS_TRYON,
@@ -80,7 +81,8 @@ export const deductSearch = mutation({
     }
 
     const newBalance = user.creditBalance - CREDITS_SEARCH;
-    await ctx.db.patch(userId, { creditBalance: newBalance });
+    const profile = await getOrCreateProfile(ctx, userId);
+    await ctx.db.patch(profile._id, { creditBalance: newBalance });
     await ctx.db.insert("creditLedger", {
       userId,
       delta: -CREDITS_SEARCH,
@@ -102,12 +104,12 @@ export const refundCredits = mutation({
   },
   handler: async (ctx, { amount, reason, refId }) => {
     const userId = await requireAuthedUserId(ctx);
-    const user = await ctx.db.get(userId);
-    if (!user) throw new Error("User not found");
+    const user = await ensureUserFields(ctx, userId);
 
-    const currentBalance = user.creditBalance ?? 0;
+    const currentBalance = user.creditBalance;
     const newBalance = currentBalance + amount;
-    await ctx.db.patch(userId, { creditBalance: newBalance });
+    const profile = await getOrCreateProfile(ctx, userId);
+    await ctx.db.patch(profile._id, { creditBalance: newBalance });
     await ctx.db.insert("creditLedger", {
       userId,
       delta: amount,
@@ -150,8 +152,9 @@ export const grantMonthlyCredits = mutation({
 
     if (alreadyGranted) return { balance: user.creditBalance, granted: false };
 
-    const newBalance = (user.creditBalance ?? 0) + grantAmount;
-    await ctx.db.patch(userId, { creditBalance: newBalance });
+    const newBalance = user.creditBalance + grantAmount;
+    const profile = await getOrCreateProfile(ctx, userId);
+    await ctx.db.patch(profile._id, { creditBalance: newBalance });
     await ctx.db.insert("creditLedger", {
       userId,
       delta: grantAmount,
@@ -170,8 +173,7 @@ export const verifyLedger = query({
   args: {},
   handler: async (ctx) => {
     const userId = await requireAuthedUserId(ctx);
-    const user = await ctx.db.get(userId);
-    if (!user) throw new Error("User not found");
+    const user = await ensureUserFields(ctx, userId);
 
     const entries = await ctx.db
       .query("creditLedger")
@@ -179,7 +181,7 @@ export const verifyLedger = query({
       .collect();
 
     const computedBalance = entries.reduce((sum, e) => sum + e.delta, 0);
-    const cachedBalance = user.creditBalance ?? 0;
+    const cachedBalance = user.creditBalance;
 
     return {
       computedBalance,

@@ -63,8 +63,21 @@ const ProductMatchJobStatus = v.union(
 export default defineSchema({
   ...authTables,
   // ─── App tables ───────────────────────────────────────────────────
-  // users table is provided by authTables with: _id, _creationTime, email, name, emailVerificationTime, isAnonymous, image
-  // We extend it in the code layer (plan, creditBalance, stripeCustomerId stored via patch)
+  // NOTE: Convex Auth's `users` table (from authTables) has a strict
+  // validator that only allows auth fields (email, name, image, etc.).
+  // It CANNOT be extended with app fields like plan/creditBalance via
+  // db.patch — the write will be rejected by schema validation.
+  // App-level per-user data lives in the `userProfiles` table below,
+  // joined 1:1 with `users` by userId.
+
+  // 1. User Profiles (app-level extension of auth users)
+  userProfiles: defineTable({
+    userId: v.id("users"),
+    plan: Plan,                          // "free" | "pro" | "max"
+    creditBalance: v.number(),           // current credits, kept in sync with creditLedger
+    stripeCustomerId: v.optional(v.string()),
+  })
+    .index("by_user", ["userId"]),
 
   // 2. Wardrobe Items
   wardrobeItems: defineTable({

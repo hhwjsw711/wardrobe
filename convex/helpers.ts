@@ -24,37 +24,65 @@ export function getStorageUrl(ctx: any, storageId: string): string {
 
 // ─── User extension helpers ─────────────────────────────────────
 
-const DEFAULT_PLAN = "free";
+const DEFAULT_PLAN = "free" as const;
 const DEFAULT_CREDITS = 30;
 
 /**
- * Return the user with app-level defaults applied.
+ * Return the user's profile row, creating it with defaults if missing.
+ *
+ * For use inside MUTATIONS only (writes to db). Queries should use
+ * `ensureUserFields` which is read-only.
+ */
+export async function getOrCreateProfile(ctx: any, userId: string) {
+  const existing = await ctx.db
+    .query("userProfiles")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .first();
+  if (existing) return existing;
+
+  const id = await ctx.db.insert("userProfiles", {
+    userId,
+    plan: DEFAULT_PLAN,
+    creditBalance: DEFAULT_CREDITS,
+  });
+  return await ctx.db.get(id);
+}
+
+/**
+ * Return the user + app-level profile data (plan, creditBalance),
+ * with defaults applied when no profile row exists yet.
  *
  * READ-ONLY: safe to call from queries. Does NOT persist defaults.
- * Use the `provisionUser` mutation to persist defaults after sign-up.
+ * The `provisionUser` mutation persists a profile row after sign-up.
  *
- * Why read-only: Convex queries run on read-only context — `ctx.db.patch`
- * is not available there. Mutations that need to read+write the user's
- * balance will patch the user record themselves, which persists any
- * defaults they relied on as a side effect.
+ * Why a separate table: Convex Auth's `users` table has a strict
+ * validator that rejects app fields like plan/creditBalance. We keep
+ * those in a 1:1 `userProfiles` table instead.
  */
 export async function ensureUserFields(ctx: any, userId: string) {
   const user = await ctx.db.get(userId);
   if (!user) throw new Error("User not found");
+
+  const profile = await ctx.db
+    .query("userProfiles")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .first();
+
   return {
     ...user,
-    plan: user.plan ?? DEFAULT_PLAN,
-    creditBalance: user.creditBalance ?? DEFAULT_CREDITS,
+    plan: profile?.plan ?? DEFAULT_PLAN,
+    creditBalance: profile?.creditBalance ?? DEFAULT_CREDITS,
+    _profileId: profile?._id ?? null,
   };
 }
 
 /**
- * Persist app-level defaults (plan, creditBalance) to the user record
- * if missing. Idempotent — safe to call on every sign-in.
+ * Ensure a `userProfiles` row exists for the authenticated user.
+ * Idempotent — safe to call on every sign-in. Creates the row with
+ * defaults if missing; does NOT overwrite existing values.
  *
  * Must be called from a MUTATION (queries are read-only). The frontend
- * fires this once when `isAuthenticated` becomes true so that subsequent
- * queries see persisted values instead of in-memory defaults.
+ * fires this once when `isAuthenticated` becomes true.
  */
 export const provisionUser = mutation({
   args: {},
@@ -62,18 +90,18 @@ export const provisionUser = mutation({
     const userId = await getAuthUserId(ctx);
     if (!userId) return null;
 
-    const user = await ctx.db.get(userId);
-    if (!user) return null;
+    const existing = await ctx.db
+      .query("userProfiles")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first();
 
-    const patches: Record<string, any> = {};
-    if (user.plan === undefined) patches.plan = DEFAULT_PLAN;
-    if (user.creditBalance === undefined) patches.creditBalance = DEFAULT_CREDITS;
+    if (existing) return existing;
 
-    if (Object.keys(patches).length > 0) {
-      await ctx.db.patch(userId, patches);
-    }
-
-    return { ...user, ...patches };
+    return await ctx.db.insert("userProfiles", {
+      userId,
+      plan: DEFAULT_PLAN,
+      creditBalance: DEFAULT_CREDITS,
+    });
   },
 });
 

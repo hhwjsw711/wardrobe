@@ -7,7 +7,7 @@ import { SpinnerGap, WarningCircle } from "@phosphor-icons/react";
  * Fits into the app's visual language: Instrument Sans, paper/ink palette.
  */
 export function AuthForm() {
-  const { signIn, signUp } = useAuthActions();
+  const { signIn } = useAuthActions();
   const { isAuthenticated, isLoading } = useConvexAuth();
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState("");
@@ -21,25 +21,22 @@ export function AuthForm() {
     setError("");
     setSubmitting(true);
     try {
-      if (isSignUp) {
-        await signUp("password", {
-          email: email.trim(),
-          password,
-          name: name.trim() || undefined,
-        });
-      } else {
-        await signIn("password", {
-          email: email.trim(),
-          password,
-        });
-      }
+      // Convex Auth's useAuthActions only exposes signIn. Sign-up is
+      // performed by calling signIn with the Password provider and a
+      // `flow: "signUp"` param.
+      await signIn("password", {
+        email: email.trim(),
+        password,
+        name: name.trim() || undefined,
+        ...(isSignUp ? { flow: "signUp" } : {}),
+      });
     } catch (err) {
       const message = err.message || "Could not sign in. Check your credentials.";
       setError(message.replace(/^ConvexError:\s*/, ""));
     } finally {
       setSubmitting(false);
     }
-  }, [isSignUp, email, password, name, signIn, signUp]);
+  }, [isSignUp, email, password, name, signIn]);
 
   const handleGitHub = useCallback(async () => {
     setError("");

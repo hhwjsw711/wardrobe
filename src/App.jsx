@@ -1007,18 +1007,26 @@ export function App() {
   const { signOut } = useAuthActions();
   const provisionUser = useMutation(api.helpers.provisionUser);
 
-  // Persist app-level user defaults (plan, creditBalance) once the
-  // session is authenticated. Idempotent on the backend, so calling it
-  // on every auth-state transition is safe. Covers password + OAuth
-  // (OAuth redirects back to the app, so this effect fires on mount).
+  // Persist app-level user defaults (plan, creditBalance) once per
+  // authenticated session. Idempotent on the backend; we additionally
+  // guard with a ref so the effect fires at most once even if the
+  // mutation function reference or auth state fluctuates between
+  // renders (avoids Maximum update depth exceeded loops).
+  const provisionedRef = useRef(false);
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated || provisionedRef.current) return;
+    provisionedRef.current = true;
     provisionUser().catch((err) => {
+      // Reset on failure so a subsequent auth transition can retry.
+      provisionedRef.current = false;
       console.warn("[provisionUser] failed:", err?.message ?? err);
     });
   }, [isAuthenticated, provisionUser]);
 
-  if (!isAuthenticated) return <AuthForm />;
+  // NOTE: do NOT early-return <AuthForm /> before all hooks below have
+  // run. Returning early changes the number of hooks between renders
+  // (Rules of Hooks violation). The auth gate is applied after all
+  // hooks have executed, just before the JSX return.
 
   // ── Convex-backed data ──
   const wardrobe = useConvexWardrobe();
@@ -1140,6 +1148,9 @@ export function App() {
   const selectedOutfit = outfits.find((o) => o.id === selectedOutfitId) || null;
 
   const isOutfitsView = activeType === "outfits";
+
+  // Auth gate: all hooks above have run, safe to short-circuit the JSX.
+  if (!isAuthenticated) return <AuthForm />;
 
   return (
     <div className={`app-shell${selectedItem || selectedOutfit ? " has-selection" : ""}`}>
