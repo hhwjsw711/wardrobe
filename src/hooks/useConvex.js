@@ -164,6 +164,40 @@ export function useConvexOutfits() {
   };
 }
 
+// ─── Try-on ──────────────────────────────────────────────────────
+
+/**
+ * Hook for try-on jobs of a specific outfit.
+ *
+ * Tracked per-outfit so the OutfitViewer can show the latest try-on status
+ * in real time (no polling). The query is "skip"ped until both authed and a
+ * concrete outfitId is bound.
+ *
+ * Returns:
+ *   jobs: TryonJob[] (real-time, newest first; each has `imageUrl`)
+ *   loading: boolean
+ *   startTryon: () => Promise<{ jobId }>  (deducts 10 credits, schedules AI)
+ */
+export function useConvexTryon(outfitId) {
+  const { isAuthenticated } = useConvexAuth();
+  const rawJobs = useQuery(
+    api.tryon.getTryonJobs,
+    isAuthenticated && outfitId ? { outfitId } : "skip"
+  );
+  const start = useMutation(api.tryon.startTryon);
+
+  const jobs = useMemo(() => rawJobs ?? EMPTY_ARRAY, [rawJobs]);
+
+  return {
+    jobs,
+    loading: rawJobs === undefined,
+    startTryon: async () => {
+      if (!outfitId) throw new Error("useConvexTryon: no outfitId bound");
+      return start({ outfitId });
+    },
+  };
+}
+
 // ─── Import / Upload ─────────────────────────────────────────────
 
 /**

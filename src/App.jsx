@@ -6,7 +6,7 @@ import { api } from "../convex/_generated/api";
 import { WardrobeImportFlow } from "./import-flow.jsx";
 import { AuthForm } from "./AuthForm.jsx";
 import { OptimizedImage } from "./OptimizedImage.jsx";
-import { useConvexWardrobe, useConvexOutfits } from "./hooks/useConvex.js";
+import { useConvexWardrobe, useConvexOutfits, useConvexTryon } from "./hooks/useConvex.js";
 
 
 const TYPES = [
@@ -778,7 +778,7 @@ function OutfitGalleryItem({ outfit, onOpen }) {
   );
 }
 
-function OutfitViewer({ outfit, lookNumber, onClose, onDelete, onRegenerate }) {
+function OutfitViewer({ outfit, lookNumber, onClose, onDelete, onRegenerate, tryonJobs, onTryOn }) {
   const closeButtonRef = useRef(null);
 
   useEffect(() => {
@@ -798,6 +798,12 @@ function OutfitViewer({ outfit, lookNumber, onClose, onDelete, onRegenerate }) {
   const lookLabel = Number.isInteger(lookNumber) && lookNumber > 0
     ? `LOOK ${String(lookNumber).padStart(2, "0")}`
     : null;
+
+  // Try-on state — pulled from the real-time job list.
+  // jobs come back newest-first (getTryonJobs uses `.order("desc")`).
+  const latestTryon = tryonJobs && tryonJobs.length > 0 ? tryonJobs[0] : null;
+  const tryonInProgress =
+    latestTryon && (latestTryon.status === "pending" || latestTryon.status === "processing");
 
   return (
     <div className="viewer-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -884,6 +890,30 @@ function OutfitViewer({ outfit, lookNumber, onClose, onDelete, onRegenerate }) {
             )}
           </div>
 
+          {latestTryon && (
+            <div className="outfit-viewer-tryon">
+              {latestTryon.status === "done" && latestTryon.imageUrl ? (
+                <>
+                  <div className="outfit-viewer-tryon-label">Try-on result</div>
+                  <img
+                    className="outfit-viewer-tryon-image"
+                    src={latestTryon.imageUrl}
+                    alt={`Try-on of ${outfit.name}`}
+                  />
+                </>
+              ) : latestTryon.status === "failed" ? (
+                <div className="outfit-viewer-tryon-failed">
+                  <span>Try-on failed: {latestTryon.error || "Unknown error"}</span>
+                </div>
+              ) : (
+                <div className="outfit-viewer-tryon-loading">
+                  <SpinnerGap size={20} weight="bold" className="spin" aria-hidden="true" />
+                  <span>Generating try-on image…</span>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="viewer-details outfit-viewer-details">
             <div className="outfit-viewer-meta">
               <h2 className="outfit-viewer-name">{outfit.name}</h2>
@@ -904,6 +934,24 @@ function OutfitViewer({ outfit, lookNumber, onClose, onDelete, onRegenerate }) {
               {outfit.status === "ready" && (
                 <button className="viewer-quiet-button" type="button" onClick={() => onRegenerate(outfit.id)} aria-label="Regenerate outfit">
                   <ArrowsClockwise size={15} weight="regular" aria-hidden="true" />
+                </button>
+              )}
+              {outfit.status === "ready" && (
+                <button
+                  className="secondary-button tryon-button"
+                  type="button"
+                  onClick={() => onTryOn()}
+                  disabled={tryonInProgress}
+                  aria-label="Start virtual try-on (10 credits)"
+                >
+                  {tryonInProgress ? (
+                    <>
+                      <SpinnerGap size={14} weight="bold" className="spin" aria-hidden="true" />
+                      Generating…
+                    </>
+                  ) : (
+                    "Try On"
+                  )}
                 </button>
               )}
               {outfit.status === "failed" && (
@@ -1065,6 +1113,11 @@ export function App() {
   const [error, setError] = useState("");
   const [selectedOutfitId, setSelectedOutfitId] = useState(null);
   const [showCreator, setShowCreator] = useState(false);
+
+  // Try-on jobs for the currently-selected outfit (real-time, skipped
+  // when nothing is selected). Bound to selectedOutfitId so the viewer
+  // can render pending → processing → done/failed transitions live.
+  const tryonHook = useConvexTryon(selectedOutfitId);
 
   // Connection status derived from Convex loading state
   const connection = loading ? "connecting" : "connected";
@@ -1261,6 +1314,8 @@ export function App() {
           onClose={() => setSelectedOutfitId(null)}
           onDelete={deleteOutfit}
           onRegenerate={regenerateOutfit}
+          tryonJobs={tryonHook.jobs}
+          onTryOn={tryonHook.startTryon}
         />
       )}
       {showCreator && (

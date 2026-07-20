@@ -1297,6 +1297,65 @@ button { font: inherit; }
   outline: none;
 }
 
+/* ── Try-on section (inside OutfitViewer) ── */
+
+.outfit-viewer-tryon {
+  margin: 4px 6% 0;
+  padding: 14px 0 6px;
+  border-top: 1px dashed var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.outfit-viewer-tryon-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.outfit-viewer-tryon-image {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+  border-radius: 0;
+  filter: drop-shadow(0 4px 14px rgba(0, 0, 0, .08));
+}
+
+.outfit-viewer-tryon-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.outfit-viewer-tryon-loading .spin,
+.tryon-button .spin {
+  animation: outfit-spin .8s linear infinite;
+}
+
+.outfit-viewer-tryon-failed {
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  background: rgba(220, 30, 30, .04);
+  color: var(--accent);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+  word-break: break-word;
+}
+
+/* "Try On" button — pushed to the right edge of the actions row. */
+.tryon-button {
+  margin-left: auto;
+  gap: 6px;
+}
+
 /* ── Outfit Pieces ── */
 
 .outfit-pieces h3 {

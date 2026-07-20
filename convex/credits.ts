@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { query, mutation } from "./_generated/server";
+import { query, mutation, internalMutation } from "./_generated/server";
 import { requireAuthedUserId, ensureUserFields, getOrCreateProfile } from "./helpers";
 
 // ─── Constants ──────────────────────────────────────────────────
@@ -39,31 +39,47 @@ export const getLedger = query({
 
 // ─── Mutations ──────────────────────────────────────────────────
 
+/**
+ * Apply a try-on credit deduction for a specific user.
+ *
+ * Shared implementation: the public `deductTryon` mutation (called from
+ * frontend, authed) and `tryon.startTryon` mutation both use this. The auth
+ * check stays at the outer mutation level; this helper does the actual
+ * balance update + ledger insert. Throws if insufficient balance.
+ */
+export async function deductTryonImpl(
+  ctx: any,
+  userId: string,
+  refId?: string
+): Promise<{ balance: number }> {
+  const user = await ensureUserFields(ctx, userId);
+
+  if (user.creditBalance < CREDITS_TRYON) {
+    throw new Error(
+      `Insufficient credits. Need ${CREDITS_TRYON}, have ${user.creditBalance}.`
+    );
+  }
+
+  const newBalance = user.creditBalance - CREDITS_TRYON;
+  const profile = await getOrCreateProfile(ctx, userId);
+  await ctx.db.patch(profile._id, { creditBalance: newBalance });
+  await ctx.db.insert("creditLedger", {
+    userId,
+    delta: -CREDITS_TRYON,
+    reason: "tryon",
+    refId,
+    balanceAfter: newBalance,
+  });
+
+  return { balance: newBalance };
+}
+
 /** Deduct credits for try-on. Throws if insufficient balance. */
 export const deductTryon = mutation({
   args: { refId: v.optional(v.string()) },
   handler: async (ctx, { refId }) => {
     const userId = await requireAuthedUserId(ctx);
-    const user = await ensureUserFields(ctx, userId);
-
-    if (user.creditBalance < CREDITS_TRYON) {
-      throw new Error(
-        `Insufficient credits. Need ${CREDITS_TRYON}, have ${user.creditBalance}.`
-      );
-    }
-
-    const newBalance = user.creditBalance - CREDITS_TRYON;
-    const profile = await getOrCreateProfile(ctx, userId);
-    await ctx.db.patch(profile._id, { creditBalance: newBalance });
-    await ctx.db.insert("creditLedger", {
-      userId,
-      delta: -CREDITS_TRYON,
-      reason: "tryon",
-      refId,
-      balanceAfter: newBalance,
-    });
-
-    return { balance: newBalance };
+    return deductTryonImpl(ctx, userId, refId);
   },
 });
 
@@ -104,23 +120,57 @@ export const refundCredits = mutation({
   },
   handler: async (ctx, { amount, reason, refId }) => {
     const userId = await requireAuthedUserId(ctx);
-    const user = await ensureUserFields(ctx, userId);
-
-    const currentBalance = user.creditBalance;
-    const newBalance = currentBalance + amount;
-    const profile = await getOrCreateProfile(ctx, userId);
-    await ctx.db.patch(profile._id, { creditBalance: newBalance });
-    await ctx.db.insert("creditLedger", {
-      userId,
-      delta: amount,
-      reason: (reason || "refund") as any,
-      refId,
-      balanceAfter: newBalance,
-    });
-
-    return { balance: newBalance };
+    return refundCreditsImpl(ctx, userId, amount, reason, refId);
   },
 });
+
+/**
+ * Internal: refund credits for a specific user, no auth check.
+ *
+ * Used by `tryon.processTryon` action when a try-on job fails. Actions
+ * invoked via the scheduler don't carry user auth context, so the public
+ * `refundCredits` mutation (which calls requireAuthedUserId) would throw.
+ * This internal variant takes userId explicitly.
+ */
+export const refundCreditsInternal = internalMutation({
+  args: {
+    userId: v.id("users"),
+    amount: v.number(),
+    reason: v.optional(v.string()),
+    refId: v.optional(v.string()),
+  },
+  handler: async (ctx, { userId, amount, reason, refId }) => {
+    return refundCreditsImpl(ctx, userId, amount, reason, refId);
+  },
+});
+
+/**
+ * Shared refund implementation: mutate balance + append ledger entry.
+ * No auth check — caller is responsible for authorization.
+ */
+async function refundCreditsImpl(
+  ctx: any,
+  userId: string,
+  amount: number,
+  reason?: string,
+  refId?: string
+): Promise<{ balance: number }> {
+  const user = await ensureUserFields(ctx, userId);
+
+  const currentBalance = user.creditBalance;
+  const newBalance = currentBalance + amount;
+  const profile = await getOrCreateProfile(ctx, userId);
+  await ctx.db.patch(profile._id, { creditBalance: newBalance });
+  await ctx.db.insert("creditLedger", {
+    userId,
+    delta: amount,
+    reason: (reason || "refund") as any,
+    refId,
+    balanceAfter: newBalance,
+  });
+
+  return { balance: newBalance };
+}
 
 /** Grant monthly credits (called by cron or on login). */
 export const grantMonthlyCredits = mutation({

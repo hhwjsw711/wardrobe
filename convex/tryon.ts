@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { query, mutation, action, internalQuery, internalMutation } from "./_generated/server";
 import { requireAuthedUserId } from "./helpers";
-import { deductTryon, refundCredits } from "./credits";
+import { deductTryonImpl } from "./credits";
 
 // ─── Internal helpers (for actions, which lack ctx.db) ───────────
 
@@ -45,16 +45,21 @@ export const getTryonJobs = query({
     const jobs = await ctx.db
       .query("tryonJobs")
       .withIndex("by_outfit", (q) => q.eq("outfitId", outfitId))
+      .order("desc")
       .collect();
-    // Only return user's own jobs
-    return jobs
-      .filter((j) => j.userId === userId)
-      .map(async (j) => ({
+    // Only return user's own jobs. Use Promise.all so the imageUrl
+    // lookups actually resolve before serialization (the prior version
+    // returned an array of unresolved Promises that JSON-stringified to
+    // [{}]).
+    const filtered = jobs.filter((j) => j.userId === userId);
+    return Promise.all(
+      filtered.map(async (j) => ({
         ...j,
         imageUrl: j.imageStorageId
           ? await ctx.storage.getUrl(j.imageStorageId)
           : null,
-      }));
+      }))
+    );
   },
 });
 
@@ -76,7 +81,7 @@ export const getTryonResult = query({
 
 // ─── Mutations ──────────────────────────────────────────────────
 
-/** Start a try-on job. Deducts 10 credits. */
+/** Start a try-on job. Deducts 10 credits and schedules AI processing. */
 export const startTryon = mutation({
   args: {
     outfitId: v.id("outfits"),
@@ -89,12 +94,26 @@ export const startTryon = mutation({
     if (!outfit || outfit.userId !== userId) throw new Error("Outfit not found");
     if (outfit.status !== "ready") throw new Error("Outfit not ready for try-on");
 
-    // Create job
+    // Create the job first so we have an ID for the ledger `refId`.
     const jobId = await ctx.db.insert("tryonJobs", {
       userId,
       outfitId,
       status: "pending",
     });
+
+    // Deduct 10 credits. Throws if insufficient — roll back the job on
+    // failure so we don't leave an orphan "pending" row.
+    try {
+      await deductTryonImpl(ctx, userId, jobId);
+    } catch (err) {
+      await ctx.db.delete(jobId);
+      throw err;
+    }
+
+    // Kick off the actual image generation asynchronously.
+    // processTryon runs without user auth (scheduler-invoked actions don't
+    // carry sessions), so any DB writes inside it use internal mutations.
+    await ctx.scheduler.runAfter(0, "tryon:processTryon", { jobId });
 
     return { jobId };
   },
@@ -172,17 +191,26 @@ export const processTryon = action({
         completedAt: Date.now(),
       });
     } catch (error: any) {
+      // Mark the job as failed first so the user sees the error state.
       await ctx.runMutation("tryon:patchTryonJob", {
         jobId,
         status: "failed",
         error: error.message?.slice(0, 300) || "Unknown error",
       });
-      // Refund credits on failure
-      await ctx.runMutation("credits:refundCredits", {
-        amount: 10,
-        reason: "refund",
-        refId: jobId,
-      });
+      // Refund the 10 credits deducted by startTryon. Uses the internal
+      // mutation because scheduler-invoked actions don't carry user auth,
+      // so the public refundCredits mutation would throw "Unauthorized".
+      try {
+        await ctx.runMutation("credits:refundCreditsInternal", {
+          userId: job.userId,
+          amount: 10,
+          reason: "refund",
+          refId: jobId,
+        });
+      } catch (refundErr) {
+        // Don't let a refund failure mask the original error.
+        console.error("[tryon] refund failed for job", jobId, refundErr);
+      }
     }
   },
 });
