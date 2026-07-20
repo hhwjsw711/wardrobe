@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowSquareOut, ArrowsClockwise, Check, CoatHanger, MagnifyingGlass, Plus, SpinnerGap, Trash, X } from "@phosphor-icons/react";
+import { useConvexAuth, useAuthActions } from "@convex-dev/auth/react";
 import { WardrobeImportFlow } from "./import-flow.jsx";
+import { AuthForm } from "./AuthForm.jsx";
 import { OptimizedImage } from "./OptimizedImage.jsx";
 import { useConvexWardrobe, useConvexOutfits } from "./hooks/useConvex.js";
 
@@ -998,6 +1000,11 @@ function OutfitCreator({ items, onCancel, onCreate }) {
 }
 
 export function App() {
+  // ── Auth gate ──
+  const { isAuthenticated, isLoading: authLoading } = useConvexAuth();
+  const { signOut } = useAuthActions();
+  if (!isAuthenticated) return <AuthForm />;
+
   // ── Convex-backed data ──
   const wardrobe = useConvexWardrobe();
   const outfitsHook = useConvexOutfits();
@@ -1138,6 +1145,7 @@ export function App() {
                   ? `${outfits.length} ${outfits.length === 1 ? "outfit" : "outfits"}`
                   : `${items.length} ${items.length === 1 ? "piece" : "pieces"}`}
               </p>
+              <button className="sign-out-button" type="button" onClick={() => signOut()} aria-label="Sign out">Sign out</button>
             </div>
           </div>
           <nav className="category-nav" aria-label="Filter wardrobe by item type">
