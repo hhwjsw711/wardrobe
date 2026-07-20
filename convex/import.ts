@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, action, query } from "./_generated/server";
+import { mutation, action, query, internalQuery, internalMutation } from "./_generated/server";
 import { requireAuthedUserId } from "./helpers";
 
 // ─── Import Pipeline ────────────────────────────────────────────
@@ -20,6 +20,33 @@ import { requireAuthedUserId } from "./helpers";
 // ──────────────────────────────────────────────────────────────────
 
 // ─── Queries ────────────────────────────────────────────────────
+
+/**
+ * Internal query: fetch a single import job by its ID.
+ * Used by actions (which cannot access ctx.db directly) to read job state.
+ */
+export const getJobById = internalQuery({
+  args: { jobId: v.id("importJobs") },
+  handler: async (ctx, { jobId }) => {
+    return await ctx.db.get(jobId);
+  },
+});
+
+/**
+ * Internal query: fetch a user's model reference storage IDs.
+ * Used by the generateModeled action to read reference photos without
+ * going through the auth-checked public query.
+ */
+export const getModelReferencesForUser = internalQuery({
+  args: { userId: v.id("users") },
+  handler: async (ctx, { userId }) => {
+    const refs = await ctx.db
+      .query("modelReferences")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    return refs.map((r) => r.storageId);
+  },
+});
 
 /** Get all active import jobs for the current user (with image URLs resolved). */
 export const getImportJobs = query({
@@ -421,17 +448,13 @@ export const analyzeUpload = action({
       },
       body: JSON.stringify({
         model: visionModel,
-        input: [
-          {
-            type: "input_text",
-            text: `Identify every distinct wearable clothing item visible in this image. For each item provide: name (max 60 chars), part (upperbody/lowerbody/wholebody_up/accessories_up/shoes), primary color (hex), secondary color (hex or null), and up to 4 style tags. Return as JSON array.`,
-          },
-          {
-            type: "input_image",
-            image_url: imageUrl,
-            detail: "high",
-          },
-        ],
+        input: [{
+          role: "user",
+          content: [
+            { type: "input_text", text: `Identify every distinct wearable clothing item visible in this image. For each item provide: name (max 60 chars), part (upperbody/lowerbody/wholebody_up/accessories_up/shoes), primary color (hex), secondary color (hex or null), and up to 4 style tags. Return as JSON array.` },
+            { type: "input_image", image_url: imageUrl, detail: "high" },
+          ],
+        }],
         text: {
           format: {
             type: "json_schema",
@@ -468,11 +491,12 @@ export const analyzeUpload = action({
     });
 
     if (!response.ok) {
-      const err = await response.text();
+      const errText = await response.text();
+      console.error(`analyzeUpload failed for ${jobId} (${response.status}):`, errText);
       await ctx.runMutation("import:updateUploadJobAnalysis", {
         jobId,
         status: "failed",
-        error: `OpenAI analyze failed: ${response.status}`,
+        error: `OpenAI analyze failed: ${response.status} - ${errText.substring(0, 300)}`,
       });
       return;
     }
@@ -545,7 +569,7 @@ export const generateGarment = action({
     regeneratePrompt: v.optional(v.string()),
   },
   handler: async (ctx, { jobId, sourceStorageId, regeneratePrompt }) => {
-    const job = await ctx.db.get(jobId);
+    const job = await ctx.runQuery("import:getJobById", { jobId });
     if (!job) throw new Error("Import job not found");
 
     const meta = job.metadata || {};
@@ -553,7 +577,7 @@ export const generateGarment = action({
     if (!sourceUrl) throw new Error("Source image not found");
 
     const baseUrl = process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1";
-    const imageModel = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
+    const imageModel = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
 
     // Choose chroma key far from garment color
     const chromaKey = chooseChromaKey(meta.color || "#d8d0c2");
@@ -572,7 +596,7 @@ export const generateGarment = action({
     formData.append("size", "1024x1024");
     formData.append("quality", process.env.OPENAI_IMAGE_QUALITY || "high");
     formData.append("output_format", "png");
-    formData.append("image", imageBlob, "source.png");
+    formData.append("image[]", imageBlob, "source.png");
 
     const response = await fetch(`${baseUrl}/images/edits`, {
       method: "POST",
@@ -584,13 +608,13 @@ export const generateGarment = action({
 
     if (!response.ok) {
       const errText = await response.text();
-      console.error(`Garment cutout failed for ${jobId}: ${response.status}`);
+      console.error(`Garment cutout failed for ${jobId} (${response.status}):`, errText);
       // Update job with failed status
       await ctx.runMutation("import:updateStageStatus", {
         jobId,
         stage: "garment",
         status: "failed",
-        error: `Image generation failed: ${response.status}`,
+        error: `Image generation failed: ${response.status} - ${errText.substring(0, 300)}`,
       });
       return;
     }
@@ -642,21 +666,18 @@ export const generateModeled = action({
     regeneratePrompt: v.optional(v.string()),
   },
   handler: async (ctx, { jobId, garmentStorageId, regeneratePrompt }) => {
-    const job = await ctx.db.get(jobId);
+    const job = await ctx.runQuery("import:getJobById", { jobId });
     if (!job) throw new Error("Import job not found");
 
     const garmentUrl = await ctx.storage.getUrl(garmentStorageId);
     if (!garmentUrl) throw new Error("Garment image not found");
 
-    // Get user's model reference photos
+    // Get user's model reference photos (storage IDs only)
     const userId = job.userId;
-    const modelRefs = await ctx.db
-      .query("modelReferences")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect();
+    const modelRefIds = await ctx.runQuery("import:getModelReferencesForUser", { userId });
 
     const baseUrl = process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1";
-    const imageModel = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
+    const imageModel = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
 
     const prompt = regeneratePrompt
       ? `Generate a professional horizontal 3:2 editorial fashion photograph of a person wearing this garment. ${regeneratePrompt} The garment must match exactly — same color, texture, pattern, and fit.`
@@ -671,17 +692,17 @@ export const generateModeled = action({
     formData.append("output_format", "png");
 
     // Add model reference images
-    for (let i = 0; i < modelRefs.length; i++) {
-      const refUrl = await ctx.storage.getUrl(modelRefs[i].storageId);
+    for (let i = 0; i < modelRefIds.length; i++) {
+      const refUrl = await ctx.storage.getUrl(modelRefIds[i]);
       if (refUrl) {
         const resp = await fetch(refUrl);
-        formData.append("image", await resp.blob(), `ref${i}.png`);
+        formData.append("image[]", await resp.blob(), `ref${i}.png`);
       }
     }
 
     // Add the garment image
     const garmentResp = await fetch(garmentUrl);
-    formData.append("image", await garmentResp.blob(), "garment.png");
+    formData.append("image[]", await garmentResp.blob(), "garment.png");
 
     const response = await fetch(`${baseUrl}/images/edits`, {
       method: "POST",
@@ -692,12 +713,13 @@ export const generateModeled = action({
     });
 
     if (!response.ok) {
-      console.error(`Modeled photo failed for ${jobId}: ${response.status}`);
+      const errText = await response.text();
+      console.error(`Modeled photo failed for ${jobId} (${response.status}):`, errText);
       await ctx.runMutation("import:updateStageStatus", {
         jobId,
         stage: "modeled",
         status: "failed",
-        error: `Image generation failed: ${response.status}`,
+        error: `Image generation failed: ${response.status} - ${errText.substring(0, 300)}`,
       });
       return;
     }
@@ -749,7 +771,7 @@ export const regenerateStage = action({
     prompt: v.optional(v.string()),
   },
   handler: async (ctx, { jobId, stage, prompt }) => {
-    const job = await ctx.db.get(jobId);
+    const job = await ctx.runQuery("import:getJobById", { jobId });
     if (!job) throw new Error("Import job not found");
 
     // Set stage status back to processing
@@ -783,7 +805,7 @@ export const retryAnalysis = action({
     jobId: v.id("importJobs"),
   },
   handler: async (ctx, { jobId }) => {
-    const job = await ctx.db.get(jobId);
+    const job = await ctx.runQuery("import:getJobById", { jobId });
     if (!job) throw new Error("Import job not found");
     if (job.kind !== "upload") throw new Error("Can only retry analysis on upload jobs");
 
@@ -808,7 +830,7 @@ export const runProductMatch = action({
     jobId: v.id("importJobs"),
   },
   handler: async (ctx, { jobId }) => {
-    const job = await ctx.db.get(jobId);
+    const job = await ctx.runQuery("import:getJobById", { jobId });
     if (!job) throw new Error("Import job not found");
 
     const garmentStorageId = job.stages?.garment?.storageId;
@@ -834,20 +856,15 @@ export const runProductMatch = action({
       },
       body: JSON.stringify({
         model,
-        reasoning: { effort: "low" },
         tools: [{ type: "web_search", search_context_size: "medium" }],
         tool_choice: "required",
-        input: [
-          {
-            type: "input_text",
-            text: `Compare this garment against official brand pages and resale listings. Identify: brand, product name, colorway, confidence (exact/likely/unknown), identifying features (up to 6), summary reasoning, and a source URL with title.`,
-          },
-          {
-            type: "input_image",
-            image_url: imageUrl,
-            detail: "high",
-          },
-        ],
+        input: [{
+          role: "user",
+          content: [
+            { type: "input_text", text: `Compare this garment against official brand pages and resale listings. Identify: brand, product name, colorway, confidence (exact/likely/unknown), identifying features (up to 6), summary reasoning, and a source URL with title.` },
+            { type: "input_image", image_url: imageUrl, detail: "high" },
+          ],
+        }],
         text: {
           format: {
             type: "json_schema",
@@ -873,7 +890,8 @@ export const runProductMatch = action({
     });
 
     if (!response.ok) {
-      console.error(`Product match failed for ${jobId}: ${response.status}`);
+      const errText = await response.text();
+      console.error(`Product match failed for ${jobId} (${response.status}):`, errText);
       await ctx.runMutation("import:updateProductMatchStatus", {
         jobId,
         status: "failed",
@@ -882,20 +900,46 @@ export const runProductMatch = action({
     }
 
     const data = await response.json();
-    const parsed = JSON.parse(data.output[0].content[0].text);
 
-    // Extract web search sources
+    // The Responses API with the web_search tool returns output items in order:
+    // web_search_call(s) first, then the final assistant message. Find the
+    // message item rather than hardcoding output[0] (which would be the search call).
+    const messageItem = data.output?.find((item: any) => item.type === "message");
+    const contentItem = messageItem?.content?.find((c: any) => c.type === "output_text")
+      || messageItem?.content?.[0];
+    if (!contentItem?.text) {
+      console.error(`Product match returned no message text for ${jobId}`);
+      await ctx.runMutation("import:updateProductMatchStatus", {
+        jobId,
+        status: "failed",
+      });
+      return;
+    }
+    const parsed = JSON.parse(contentItem.text);
+
+    // Extract web search sources from URL citation annotations (built-in
+    // web_search tool) with a function_call_output fallback (custom tools).
     const sources: { url: string; title?: string }[] = [];
-    for (const item of data.output) {
-      if (item.type === "function_call_output") {
-        try {
-          const searchResult = JSON.parse(item.output);
-          if (Array.isArray(searchResult)) {
-            for (const s of searchResult.slice(0, 8)) {
-              if (s.url) sources.push({ url: s.url, title: s.title });
+    const annotations = contentItem.annotations;
+    if (Array.isArray(annotations)) {
+      for (const ann of annotations) {
+        if (ann.type === "url_citation" && ann.url) {
+          sources.push({ url: ann.url, title: ann.title });
+        }
+      }
+    }
+    if (sources.length === 0) {
+      for (const item of data.output || []) {
+        if (item.type === "function_call_output") {
+          try {
+            const searchResult = JSON.parse(item.output);
+            if (Array.isArray(searchResult)) {
+              for (const s of searchResult.slice(0, 8)) {
+                if (s.url) sources.push({ url: s.url, title: s.title });
+              }
             }
-          }
-        } catch {}
+          } catch {}
+        }
       }
     }
 
@@ -905,29 +949,28 @@ export const runProductMatch = action({
       confidence = "likely";
     }
 
-    // Update both the import job metadata and the wardrobe item
-    const updatedMetadata = {
-      ...(job.metadata || {}),
-      brand: parsed.brand,
-      productName: parsed.productName,
-      productColorway: parsed.colorway,
-      productUrl: parsed.sourceUrl,
+    // Update the import job metadata. Note: productColorway is NOT a field in
+    // the importJobs.metadata schema, so it is only stored on the wardrobe item.
+    await ctx.runMutation("import:patchJobProductMetadata", {
+      jobId,
+      brand: parsed.brand ?? null,
+      productName: parsed.productName ?? null,
+      productUrl: parsed.sourceUrl ?? null,
       productConfidence: confidence,
-    };
-
-    await ctx.db.patch(jobId, { metadata: updatedMetadata });
+    });
 
     // Update wardrobe item if it exists
     if (job.wardrobeItemId) {
-      await ctx.db.patch(job.wardrobeItemId, {
-        brand: parsed.brand,
-        productName: parsed.productName,
-        productColorway: parsed.colorway,
-        productUrl: parsed.sourceUrl,
-        productConfidence: confidence as any,
+      await ctx.runMutation("wardrobe:patchItemProductMatch", {
+        itemId: job.wardrobeItemId,
+        brand: parsed.brand ?? null,
+        productName: parsed.productName ?? null,
+        productColorway: parsed.colorway ?? null,
+        productUrl: parsed.sourceUrl ?? null,
+        productConfidence: confidence,
         productEvidence: parsed.identifyingFeatures?.slice(0, 6) || [],
         productSources: sources.slice(0, 8),
-        productMatchSummary: parsed.summary?.slice(0, 500),
+        productMatchSummary: parsed.summary?.slice(0, 500) || "",
       });
     }
 
@@ -1051,6 +1094,30 @@ export const updateProductMatchStatus = mutation({
   },
   handler: async (ctx, { jobId, status }) => {
     await ctx.db.patch(jobId, { productMatch: { status } });
+  },
+});
+
+/** Patch product match fields onto an import job's metadata (called by actions). */
+export const patchJobProductMetadata = internalMutation({
+  args: {
+    jobId: v.id("importJobs"),
+    brand: v.union(v.string(), v.null()),
+    productName: v.union(v.string(), v.null()),
+    productUrl: v.union(v.string(), v.null()),
+    productConfidence: v.string(),
+  },
+  handler: async (ctx, { jobId, brand, productName, productUrl, productConfidence }) => {
+    const job = await ctx.db.get(jobId);
+    if (!job?.metadata) return;
+    await ctx.db.patch(jobId, {
+      metadata: {
+        ...job.metadata,
+        productConfidence,
+        ...(brand ? { brand } : {}),
+        ...(productName ? { productName } : {}),
+        ...(productUrl ? { productUrl } : {}),
+      },
+    });
   },
 });
 

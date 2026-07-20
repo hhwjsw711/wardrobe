@@ -1,7 +1,39 @@
 import { v } from "convex/values";
-import { query, mutation, action } from "./_generated/server";
+import { query, mutation, action, internalQuery, internalMutation } from "./_generated/server";
 import { requireAuthedUserId } from "./helpers";
 import { deductTryon, refundCredits } from "./credits";
+
+// ─── Internal helpers (for actions, which lack ctx.db) ───────────
+
+/** Internal: read a try-on job by ID. */
+export const getTryonJobById = internalQuery({
+  args: { jobId: v.id("tryonJobs") },
+  handler: async (ctx, { jobId }) => {
+    return await ctx.db.get(jobId);
+  },
+});
+
+/** Internal: read an outfit by ID (used by processTryon action). */
+export const getOutfitForTryon = internalQuery({
+  args: { outfitId: v.id("outfits") },
+  handler: async (ctx, { outfitId }) => {
+    return await ctx.db.get(outfitId);
+  },
+});
+
+/** Internal: patch a try-on job. */
+export const patchTryonJob = internalMutation({
+  args: {
+    jobId: v.id("tryonJobs"),
+    status: v.union(v.literal("processing"), v.literal("done"), v.literal("failed")),
+    imageStorageId: v.optional(v.id("_storage")),
+    completedAt: v.optional(v.number()),
+    error: v.optional(v.string()),
+  },
+  handler: async (ctx, { jobId, ...patch }) => {
+    await ctx.db.patch(jobId, patch);
+  },
+});
 
 // ─── Queries ────────────────────────────────────────────────────
 
@@ -72,15 +104,15 @@ export const startTryon = mutation({
 export const processTryon = action({
   args: { jobId: v.id("tryonJobs") },
   handler: async (ctx, { jobId }) => {
-    const job = await ctx.db.get(jobId);
+    const job = await ctx.runQuery("tryon:getTryonJobById", { jobId });
     if (!job || job.status !== "pending") return;
 
     // Update status
-    await ctx.db.patch(jobId, { status: "processing" });
+    await ctx.runMutation("tryon:patchTryonJob", { jobId, status: "processing" });
 
     try {
       // Fetch outfit image
-      const outfit = await ctx.db.get(job.outfitId);
+      const outfit = await ctx.runQuery("tryon:getOutfitForTryon", { outfitId: job.outfitId });
       if (!outfit || !outfit.imageStorageId) throw new Error("No outfit image");
 
       const outfitImageUrl = await ctx.storage.getUrl(outfit.imageStorageId);
@@ -91,7 +123,7 @@ export const processTryon = action({
       // For now, this is a placeholder that mirrors the outfit image
 
       const baseUrl = process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1";
-      const model = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
+      const model = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
 
       const imageResp = await fetch(outfitImageUrl);
       const imageBlob = await imageResp.blob();
@@ -105,7 +137,7 @@ export const processTryon = action({
       formData.append("size", "1024x1024");
       formData.append("quality", process.env.OPENAI_IMAGE_QUALITY || "high");
       formData.append("output_format", "png");
-      formData.append("image", imageBlob, "outfit.png");
+      formData.append("image[]", imageBlob, "outfit.png");
 
       const response = await fetch(`${baseUrl}/images/edits`, {
         method: "POST",
@@ -133,13 +165,15 @@ export const processTryon = action({
       });
       const { storageId } = await uploadResp.json();
 
-      await ctx.db.patch(jobId, {
+      await ctx.runMutation("tryon:patchTryonJob", {
+        jobId,
         status: "done",
         imageStorageId: storageId,
         completedAt: Date.now(),
       });
     } catch (error: any) {
-      await ctx.db.patch(jobId, {
+      await ctx.runMutation("tryon:patchTryonJob", {
+        jobId,
         status: "failed",
         error: error.message?.slice(0, 300) || "Unknown error",
       });

@@ -35,56 +35,68 @@ function colorDistance(first, second) {
 }
 
 function extractPalette(image) {
-  const canvas = document.createElement("canvas");
-  canvas.width = 72;
-  canvas.height = 72;
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  context.clearRect(0, 0, canvas.width, canvas.height);
-  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = 72;
+    canvas.height = 72;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
 
-  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-  const buckets = new Map();
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    const buckets = new Map();
 
-  for (let index = 0; index < pixels.length; index += 4) {
-    const alpha = pixels[index + 3];
-    if (alpha < 72) continue;
+    for (let index = 0; index < pixels.length; index += 4) {
+      const alpha = pixels[index + 3];
+      if (alpha < 72) continue;
 
-    const red = pixels[index];
-    const green = pixels[index + 1];
-    const blue = pixels[index + 2];
-    const key = `${Math.round(red / 28)}-${Math.round(green / 28)}-${Math.round(blue / 28)}`;
-    const current = buckets.get(key) || { red: 0, green: 0, blue: 0, count: 0 };
-    current.red += red;
-    current.green += green;
-    current.blue += blue;
-    current.count += 1;
-    buckets.set(key, current);
+      const red = pixels[index];
+      const green = pixels[index + 1];
+      const blue = pixels[index + 2];
+      const key = `${Math.round(red / 28)}-${Math.round(green / 28)}-${Math.round(blue / 28)}`;
+      const current = buckets.get(key) || { red: 0, green: 0, blue: 0, count: 0 };
+      current.red += red;
+      current.green += green;
+      current.blue += blue;
+      current.count += 1;
+      buckets.set(key, current);
+    }
+
+    const ranked = [...buckets.values()]
+      .map((bucket) => ({
+        red: Math.round(bucket.red / bucket.count),
+        green: Math.round(bucket.green / bucket.count),
+        blue: Math.round(bucket.blue / bucket.count),
+        count: bucket.count,
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    const selected = [];
+    for (const color of ranked) {
+      if (selected.every((existing) => colorDistance(existing, color) > 38)) selected.push(color);
+      if (selected.length === 5) break;
+    }
+
+    return selected.map((color) => rgbToHex(color.red, color.green, color.blue));
+  } catch (error) {
+    // Cross-origin images without proper CORS headers taint the canvas and
+    // throw a SecurityError on getImageData. Skip palette extraction in that
+    // case rather than spamming the console.
+    return [];
   }
-
-  const ranked = [...buckets.values()]
-    .map((bucket) => ({
-      red: Math.round(bucket.red / bucket.count),
-      green: Math.round(bucket.green / bucket.count),
-      blue: Math.round(bucket.blue / bucket.count),
-      count: bucket.count,
-    }))
-    .sort((a, b) => b.count - a.count);
-
-  const selected = [];
-  for (const color of ranked) {
-    if (selected.every((existing) => colorDistance(existing, color) > 38)) selected.push(color);
-    if (selected.length === 5) break;
-  }
-
-  return selected.map((color) => rgbToHex(color.red, color.green, color.blue));
 }
 
 function buildSamplingCanvas(image) {
-  const canvas = document.createElement("canvas");
-  canvas.width = image.naturalWidth;
-  canvas.height = image.naturalHeight;
-  canvas.getContext("2d", { willReadFrequently: true }).drawImage(image, 0, 0);
-  return canvas;
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    canvas.getContext("2d", { willReadFrequently: true }).drawImage(image, 0, 0);
+    return canvas;
+  } catch (error) {
+    // Cross-origin tainted canvas; color sampling will be unavailable.
+    return null;
+  }
 }
 
 function sampleImageColor(image, canvas, event) {
@@ -100,15 +112,20 @@ function sampleImageColor(image, canvas, event) {
   if (imageX < 0 || imageY < 0 || imageX >= canvas.width || imageY >= canvas.height) return null;
 
   const context = canvas.getContext("2d", { willReadFrequently: true });
-  for (let radius = 0; radius <= 18; radius += 2) {
-    const startX = Math.max(0, imageX - radius);
-    const startY = Math.max(0, imageY - radius);
-    const width = Math.min(canvas.width - startX, (radius * 2) + 1);
-    const height = Math.min(canvas.height - startY, (radius * 2) + 1);
-    const data = context.getImageData(startX, startY, width, height).data;
-    for (let index = 0; index < data.length; index += 4) {
-      if (data[index + 3] > 96) return rgbToHex(data[index], data[index + 1], data[index + 2]);
+  try {
+    for (let radius = 0; radius <= 18; radius += 2) {
+      const startX = Math.max(0, imageX - radius);
+      const startY = Math.max(0, imageY - radius);
+      const width = Math.min(canvas.width - startX, (radius * 2) + 1);
+      const height = Math.min(canvas.height - startY, (radius * 2) + 1);
+      const data = context.getImageData(startX, startY, width, height).data;
+      for (let index = 0; index < data.length; index += 4) {
+        if (data[index + 3] > 96) return rgbToHex(data[index], data[index + 1], data[index + 2]);
+      }
     }
+  } catch (error) {
+    // Cross-origin tainted canvas; cannot sample pixel color.
+    return null;
   }
 
   return null;
@@ -462,6 +479,7 @@ function ItemViewer({ item, onClose, onSave, onDelete, onIdentifyProduct }) {
         sizes="(max-width: 520px) 40vw, 300px"
         breakpoints={[160, 240, 320, 480, 640]}
         priority
+        crossOrigin="anonymous"
         onLoad={handleImageLoad}
         onClick={handleImageClick}
       />

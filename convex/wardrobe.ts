@@ -1,7 +1,44 @@
 import { v } from "convex/values";
-import { query, mutation, action } from "./_generated/server";
+import { query, mutation, action, internalQuery, internalMutation } from "./_generated/server";
 import { requireAuthedUserId, ensureUserFields } from "./helpers";
 import { getAuthUserId } from "@convex-dev/auth/server";
+
+// ─── Internal helpers (for actions, which lack ctx.db) ───────────
+
+/** Internal: read a single wardrobe item by ID (no auth check — caller must verify). */
+export const getWardrobeItemById = internalQuery({
+  args: { itemId: v.id("wardrobeItems") },
+  handler: async (ctx, { itemId }) => {
+    return await ctx.db.get(itemId);
+  },
+});
+
+/** Internal: patch product match results onto a wardrobe item. */
+export const patchItemProductMatch = internalMutation({
+  args: {
+    itemId: v.id("wardrobeItems"),
+    brand: v.union(v.string(), v.null()),
+    productName: v.union(v.string(), v.null()),
+    productColorway: v.union(v.string(), v.null()),
+    productUrl: v.union(v.string(), v.null()),
+    productConfidence: v.union(v.literal("exact"), v.literal("likely"), v.literal("unknown")),
+    productEvidence: v.array(v.string()),
+    productSources: v.array(v.object({ url: v.string(), title: v.optional(v.string()) })),
+    productMatchSummary: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.itemId, {
+      brand: args.brand,
+      productName: args.productName,
+      productColorway: args.productColorway,
+      productUrl: args.productUrl,
+      productConfidence: args.productConfidence,
+      productEvidence: args.productEvidence,
+      productSources: args.productSources,
+      productMatchSummary: args.productMatchSummary,
+    });
+  },
+});
 
 // ─── Queries ────────────────────────────────────────────────────
 
@@ -228,17 +265,13 @@ export const analyzePhoto = action({
       },
       body: JSON.stringify({
         model,
-        input: [
-          {
-            type: "input_text",
-            text: `Identify every distinct wearable clothing item visible in this image. For each item provide: name (max 60 chars), part (upperbody/lowerbody/wholebody_up/accessories_up/shoes), primary color (hex), secondary color (hex or null), and up to 4 style tags. Return as JSON array.`,
-          },
-          {
-            type: "input_image",
-            image_url: imageUrl,
-            detail: "high",
-          },
-        ],
+        input: [{
+          role: "user",
+          content: [
+            { type: "input_text", text: `Identify every distinct wearable clothing item visible in this image. For each item provide: name (max 60 chars), part (upperbody/lowerbody/wholebody_up/accessories_up/shoes), primary color (hex), secondary color (hex or null), and up to 4 style tags. Return as JSON array.` },
+            { type: "input_image", image_url: imageUrl, detail: "high" },
+          ],
+        }],
         text: {
           format: {
             type: "json_schema",
@@ -294,7 +327,7 @@ export const productMatch = action({
     if (!userId) throw new Error("Unauthorized");
 
     // Read item from DB
-    const item = await ctx.db.get(itemId);
+    const item = await ctx.runQuery("wardrobe:getWardrobeItemById", { itemId });
     if (!item || item.userId !== userId) throw new Error("Not found");
 
     const imageUrl = await ctx.storage.getUrl(item.garmentStorageId);
@@ -311,7 +344,6 @@ export const productMatch = action({
       },
       body: JSON.stringify({
         model,
-        reasoning: { effort: "low" },
         tools: [
           {
             type: "web_search",
@@ -319,17 +351,13 @@ export const productMatch = action({
           },
         ],
         tool_choice: "required",
-        input: [
-          {
-            type: "input_text",
-            text: `Compare this garment against official brand pages and resale listings. Identify: brand, product name, colorway, confidence (exact/likely/unknown), identifying features (up to 6), summary reasoning, and a source URL with title.`,
-          },
-          {
-            type: "input_image",
-            image_url: imageUrl,
-            detail: "high",
-          },
-        ],
+        input: [{
+          role: "user",
+          content: [
+            { type: "input_text", text: `Compare this garment against official brand pages and resale listings. Identify: brand, product name, colorway, confidence (exact/likely/unknown), identifying features (up to 6), summary reasoning, and a source URL with title.` },
+            { type: "input_image", image_url: imageUrl, detail: "high" },
+          ],
+        }],
         text: {
           format: {
             type: "json_schema",
@@ -360,23 +388,41 @@ export const productMatch = action({
     }
 
     const data = await response.json();
-    const parsed = JSON.parse(data.output[0].content[0].text);
 
-    // Extract web search sources from the response
+    // The Responses API with the web_search tool returns output items in order:
+    // web_search_call(s) first, then the final assistant message. Find the
+    // message item rather than hardcoding output[0] (which would be the search call).
+    const messageItem = data.output?.find((item: any) => item.type === "message");
+    const contentItem = messageItem?.content?.find((c: any) => c.type === "output_text")
+      || messageItem?.content?.[0];
+    if (!contentItem?.text) {
+      throw new Error("Product match returned no message text");
+    }
+    const parsed = JSON.parse(contentItem.text);
+
+    // Extract web search sources from URL citation annotations (built-in
+    // web_search tool) with a function_call_output fallback (custom tools).
     const sources: { url: string; title?: string }[] = [];
-    for (const item of data.output) {
-      if (item.type === "function_call" && item.name === "web_search") {
-        // Web search call — we extract sources from the response
+    const annotations = contentItem.annotations;
+    if (Array.isArray(annotations)) {
+      for (const ann of annotations) {
+        if (ann.type === "url_citation" && ann.url) {
+          sources.push({ url: ann.url, title: ann.title });
+        }
       }
-      if (item.type === "function_call_output") {
-        try {
-          const searchResult = JSON.parse(item.output);
-          if (Array.isArray(searchResult)) {
-            for (const s of searchResult.slice(0, 8)) {
-              if (s.url) sources.push({ url: s.url, title: s.title });
+    }
+    if (sources.length === 0) {
+      for (const item of data.output || []) {
+        if (item.type === "function_call_output") {
+          try {
+            const searchResult = JSON.parse(item.output);
+            if (Array.isArray(searchResult)) {
+              for (const s of searchResult.slice(0, 8)) {
+                if (s.url) sources.push({ url: s.url, title: s.title });
+              }
             }
-          }
-        } catch {}
+          } catch {}
+        }
       }
     }
 
@@ -387,12 +433,13 @@ export const productMatch = action({
     }
 
     // Save results to the item in DB
-    await ctx.db.patch(itemId, {
+    await ctx.runMutation("wardrobe:patchItemProductMatch", {
+      itemId,
       brand: parsed.brand,
       productName: parsed.productName,
       productColorway: parsed.colorway,
       productUrl: parsed.sourceUrl,
-      productConfidence: confidence as any,
+      productConfidence: confidence as "exact" | "likely" | "unknown",
       productEvidence: parsed.identifyingFeatures?.slice(0, 6) || [],
       productSources: sources.slice(0, 8),
       productMatchSummary: parsed.summary,

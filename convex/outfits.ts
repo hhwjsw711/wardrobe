@@ -1,6 +1,52 @@
 import { v } from "convex/values";
-import { query, mutation, action, internalAction } from "./_generated/server";
+import { query, mutation, action, internalAction, internalQuery, internalMutation } from "./_generated/server";
 import { requireAuthedUserId } from "./helpers";
+
+// ─── Internal helpers (for actions, which lack ctx.db) ───────────
+
+const OutfitStatus = v.union(
+  v.literal("generating"),
+  v.literal("ready"),
+  v.literal("failed"),
+  v.literal("stalled"),
+);
+
+/** Internal: read a single outfit by ID. */
+export const getOutfitById = internalQuery({
+  args: { outfitId: v.id("outfits") },
+  handler: async (ctx, { outfitId }) => {
+    return await ctx.db.get(outfitId);
+  },
+});
+
+/** Internal: read multiple wardrobe items by their IDs. */
+export const getWardrobeItemsByIds = internalQuery({
+  args: { ids: v.array(v.id("wardrobeItems")) },
+  handler: async (ctx, { ids }) => {
+    const results = await Promise.all(ids.map((id) => ctx.db.get(id)));
+    return results.filter((x) => x !== null);
+  },
+});
+
+/** Internal: patch an outfit with a subset of fields used by generateOutfitImage. */
+export const patchOutfit = internalMutation({
+  args: {
+    outfitId: v.id("outfits"),
+    status: v.optional(OutfitStatus),
+    imageStorageId: v.optional(v.id("_storage")),
+    error: v.optional(v.union(v.string(), v.null())),
+    description: v.optional(v.union(v.string(), v.null())),
+    tags: v.optional(v.array(v.string())),
+  },
+  handler: async (ctx, { outfitId, ...patch }) => {
+    // Strip undefined so we don't null out fields we intended to leave alone
+    const clean: Record<string, any> = {};
+    for (const [k, val] of Object.entries(patch)) {
+      if (val !== undefined) clean[k] = val;
+    }
+    await ctx.db.patch(outfitId, clean);
+  },
+});
 
 // ─── Queries ────────────────────────────────────────────────────
 
@@ -158,12 +204,12 @@ export const regenerateOutfit = mutation({
 
 // ─── Internal Actions (AI generation) ──────────────────────────
 
-/** Generate outfit image via OpenAI gpt-image-2. */
+/** Generate outfit image via OpenAI gpt-image-1. */
 export const generateOutfitImage = action({
   args: { outfitId: v.id("outfits") },
   handler: async (ctx, { outfitId }) => {
-    // Read outfit and garments from DB
-    const outfit = await ctx.db.get(outfitId);
+    // Read outfit and garments from DB (actions cannot use ctx.db directly)
+    const outfit = await ctx.runQuery("outfits:getOutfitById", { outfitId });
     if (!outfit || outfit.status !== "generating") {
       console.log("Outfit not in generating state, skipping");
       return;
@@ -172,12 +218,18 @@ export const generateOutfitImage = action({
     const userId = outfit.userId;
 
     try {
-      // Fetch all garment images
+      // Fetch all garment items in one shot (preserving order of garmentIds)
+      const items = await ctx.runQuery("outfits:getWardrobeItemsByIds", {
+        ids: outfit.garmentIds,
+      });
+      const itemsById = new Map(items.map((it: any) => [it._id, it]));
       const garmentData = await Promise.all(
         outfit.garmentIds.map(async (gid) => {
-          const item = await ctx.db.get(gid);
+          const item: any = itemsById.get(gid);
           if (!item) throw new Error(`Garment ${gid} not found`);
-          const imageUrl = await ctx.storage.getUrl(item.garmentStorageId);
+          const imageUrl = item.garmentStorageId
+            ? await ctx.storage.getUrl(item.garmentStorageId)
+            : null;
           return { item, imageUrl };
         })
       );
@@ -200,7 +252,7 @@ export const generateOutfitImage = action({
       const baseUrl =
         process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1";
       const model =
-        process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
+        process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
 
       // Download images as blobs for multipart upload
       const imageParts: { filename: string; data: ArrayBuffer }[] = [];
@@ -232,7 +284,7 @@ export const generateOutfitImage = action({
       formData.append("output_format", "png");
       for (const part of imageParts) {
         formData.append(
-          "image",
+          "image[]",
           new Blob([part.data], { type: "image/png" }),
           part.filename
         );
@@ -249,7 +301,8 @@ export const generateOutfitImage = action({
       if (!response.ok) {
         const errText = await response.text();
         // Mark outfit as failed
-        await ctx.db.patch(outfitId, {
+        await ctx.runMutation("outfits:patchOutfit", {
+          outfitId,
           status: "failed",
           error: `Image generation failed: ${response.status} ${errText.slice(0, 200)}`,
         });
@@ -259,7 +312,8 @@ export const generateOutfitImage = action({
       const result = await response.json();
       const imageBase64 = result.data?.[0]?.b64_json;
       if (!imageBase64) {
-        await ctx.db.patch(outfitId, {
+        await ctx.runMutation("outfits:patchOutfit", {
+          outfitId,
           status: "failed",
           error: "No image returned from OpenAI",
         });
@@ -276,7 +330,8 @@ export const generateOutfitImage = action({
       const { storageId } = await uploadResp.json();
 
       // Update outfit with image
-      await ctx.db.patch(outfitId, {
+      await ctx.runMutation("outfits:patchOutfit", {
+        outfitId,
         imageStorageId: storageId,
       });
 
@@ -284,7 +339,8 @@ export const generateOutfitImage = action({
       try {
         const imageUrl = await ctx.storage.getUrl(storageId);
         const analysis = await analyzeOutfitImage(baseUrl, imageUrl!);
-        await ctx.db.patch(outfitId, {
+        await ctx.runMutation("outfits:patchOutfit", {
+          outfitId,
           status: "ready",
           description: analysis.description?.slice(0, 300),
           tags: (analysis.tags || []).slice(0, 4).map((t: string) => t.toUpperCase().slice(0, 24)),
@@ -292,11 +348,15 @@ export const generateOutfitImage = action({
       } catch (e) {
         // Analysis failed — still mark as ready, just without description/tags
         console.error("Editorial analysis failed:", e);
-        await ctx.db.patch(outfitId, { status: "ready" });
+        await ctx.runMutation("outfits:patchOutfit", {
+          outfitId,
+          status: "ready",
+        });
       }
     } catch (error: any) {
       console.error("Outfit generation error:", error);
-      await ctx.db.patch(outfitId, {
+      await ctx.runMutation("outfits:patchOutfit", {
+        outfitId,
         status: "failed",
         error: error.message?.slice(0, 300) || "Unknown error",
       });
@@ -391,17 +451,13 @@ async function analyzeOutfitImage(
     },
     body: JSON.stringify({
       model,
-      input: [
-        {
-          type: "input_text",
-          text: `You are a fashion editor. Look at this outfit photo. Write a one-sentence style note (max 30 words), then provide 2–3 uppercase style tags.`,
-        },
-        {
-          type: "input_image",
-          image_url: imageUrl,
-          detail: "high",
-        },
-      ],
+      input: [{
+        role: "user",
+        content: [
+          { type: "input_text", text: `You are a fashion editor. Look at this outfit photo. Write a one-sentence style note (max 30 words), then provide 2–3 uppercase style tags.` },
+          { type: "input_image", image_url: imageUrl, detail: "high" },
+        ],
+      }],
       text: {
         format: {
           type: "json_schema",
