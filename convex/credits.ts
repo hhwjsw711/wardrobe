@@ -241,3 +241,55 @@ export const verifyLedger = query({
     };
   },
 });
+
+// ─── Backfill (one-time repair) ──────────────────────────────────
+
+/**
+ * Repair the ledger for users created BEFORE `provisionUser` started
+ * recording the initial credit grant.
+ *
+ * Symptom: `verifyLedger` reports `match: false` for any user who never
+ * triggered `grantMonthlyCredits` — their `userProfiles.creditBalance`
+ * was set directly by provisionUser, but the ledger only recorded
+ * subsequent deductions, so `sum(ledger.delta)` is off by exactly
+ * FREE_MONTHLY_CREDITS.
+ *
+ * This mutation finds such users (have a profile but zero "grant" entries)
+ * and inserts a backfill grant entry so the ledger is self-consistent.
+ * Idempotent — skips users that already have a grant entry. Safe to call
+ * repeatedly.
+ *
+ * Note: `balanceAfter` is set to FREE_MONTHLY_CREDITS, representing the
+ * balance immediately after the initial grant at account-creation time.
+ * The `_creationTime` of the backfilled row will be "now" rather than the
+ * original account-creation time, so `grantMonthlyCredits`'s monthly
+ * dedup may suppress this month's monthly grant for repaired users —
+ * acceptable for a one-time dev-data repair.
+ */
+export const backfillInitialGrant = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireAuthedUserId(ctx);
+
+    // Already has at least one grant entry? Nothing to do.
+    const existingGrants = await ctx.db
+      .query("creditLedger")
+      .withIndex("by_user_reason", (q) =>
+        q.eq("userId", userId).eq("reason", "grant")
+      )
+      .collect();
+    if (existingGrants.length > 0) {
+      return { repaired: false, reason: "already has grant entry" };
+    }
+
+    // No grant entry — backfill one equal to the initial credit grant.
+    await ctx.db.insert("creditLedger", {
+      userId,
+      delta: FREE_MONTHLY_CREDITS,
+      reason: "grant",
+      balanceAfter: FREE_MONTHLY_CREDITS,
+    });
+
+    return { repaired: true, delta: FREE_MONTHLY_CREDITS };
+  },
+});

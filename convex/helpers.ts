@@ -28,6 +28,37 @@ const DEFAULT_PLAN = "free" as const;
 const DEFAULT_CREDITS = 30;
 
 /**
+ * Create a `userProfiles` row with default plan + credits AND record the
+ * initial credit grant in the ledger.
+ *
+ * The ledger entry is critical: without it, `credits:verifyLedger` reports
+ * a permanent mismatch for users who never triggered
+ * `grantMonthlyCredits`, because their balance was set directly here but
+ * the ledger only recorded subsequent deductions.
+ *
+ * MUST be called from a mutation (writes to db). Idempotent callers must
+ * first check for an existing profile via the `by_user` index — this
+ * function always inserts.
+ */
+async function createProfileWithGrant(
+  ctx: any,
+  userId: string
+): Promise<string> {
+  const profileId = await ctx.db.insert("userProfiles", {
+    userId,
+    plan: DEFAULT_PLAN,
+    creditBalance: DEFAULT_CREDITS,
+  });
+  await ctx.db.insert("creditLedger", {
+    userId,
+    delta: DEFAULT_CREDITS,
+    reason: "grant",
+    balanceAfter: DEFAULT_CREDITS,
+  });
+  return profileId;
+}
+
+/**
  * Return the user's profile row, creating it with defaults if missing.
  *
  * For use inside MUTATIONS only (writes to db). Queries should use
@@ -40,11 +71,7 @@ export async function getOrCreateProfile(ctx: any, userId: string) {
     .first();
   if (existing) return existing;
 
-  const id = await ctx.db.insert("userProfiles", {
-    userId,
-    plan: DEFAULT_PLAN,
-    creditBalance: DEFAULT_CREDITS,
-  });
+  const id = await createProfileWithGrant(ctx, userId);
   return await ctx.db.get(id);
 }
 
@@ -97,11 +124,7 @@ export const provisionUser = mutation({
 
     if (existing) return existing;
 
-    return await ctx.db.insert("userProfiles", {
-      userId,
-      plan: DEFAULT_PLAN,
-      creditBalance: DEFAULT_CREDITS,
-    });
+    return await createProfileWithGrant(ctx, userId);
   },
 });
 
