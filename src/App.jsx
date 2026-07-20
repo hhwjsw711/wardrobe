@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowSquareOut, ArrowsClockwise, Check, CoatHanger, MagnifyingGlass, Plus, SpinnerGap, Trash, X } from "@phosphor-icons/react";
 import { WardrobeImportFlow } from "./import-flow.jsx";
 import { OptimizedImage } from "./OptimizedImage.jsx";
-import { useConvexWardrobe, useConvexOutfits, useConvexImport } from "./hooks/useConvex.js";
+import { useConvexWardrobe, useConvexOutfits } from "./hooks/useConvex.js";
 
 
 const TYPES = [
@@ -1001,7 +1001,6 @@ export function App() {
   // ── Convex-backed data ──
   const wardrobe = useConvexWardrobe();
   const outfitsHook = useConvexOutfits();
-  const importHook = useConvexImport();
 
   const items = wardrobe.items;
   const loading = wardrobe.loading;
@@ -1085,61 +1084,6 @@ export function App() {
       throw new Error(requestError.message || "Could not identify this product.");
     }
   };
-
-  // ── Import bridge ──
-  // Import flow still uses old Vite API. When items are approved,
-  // we bridge them to Convex by fetching images and creating DB records.
-
-  const addImportedItem = useCallback(async (newItem) => {
-    try {
-      const imageResp = await fetch(newItem.image);
-      if (!imageResp.ok) return;
-      const imageBlob = await imageResp.blob();
-      const uploadUrl = await importHook.generateUploadUrl();
-      const uploadResp = await fetch(uploadUrl, {
-        method: "POST",
-        headers: { "Content-Type": imageBlob.type || "image/png" },
-        body: imageBlob,
-      });
-      const { storageId } = await uploadResp.json();
-      await wardrobe.addItem({
-        name: newItem.name,
-        part: newItem.part,
-        color: newItem.color,
-        secondaryColor: newItem.secondaryColor || undefined,
-        tags: newItem.tags || [],
-        garmentStorageId: storageId,
-        importJobId: newItem.importJobId,
-        brand: newItem.brand,
-        productName: newItem.productName,
-        productUrl: newItem.productUrl,
-        productConfidence: newItem.productConfidence,
-        productEvidence: newItem.productEvidence,
-      });
-    } catch (err) {
-      console.error("Failed to sync imported item to Convex:", err);
-    }
-  }, [importHook.generateUploadUrl, wardrobe.addItem]);
-
-  const attachImportedModeledImage = useCallback(async (jobId, modeledImageUrl) => {
-    try {
-      const item = itemsRef.current.find((i) => i.importJobId === jobId);
-      if (!item) return;
-      const resp = await fetch(modeledImageUrl);
-      if (!resp.ok) return;
-      const blob = await resp.blob();
-      const uploadUrl = await importHook.generateUploadUrl();
-      const uploadResp = await fetch(uploadUrl, {
-        method: "POST",
-        headers: { "Content-Type": blob.type || "image/png" },
-        body: blob,
-      });
-      const { storageId } = await uploadResp.json();
-      await wardrobe.saveItem(item.id, { modeledStorageId: storageId });
-    } catch (err) {
-      console.error("Failed to attach modeled image:", err);
-    }
-  }, [importHook.generateUploadUrl, wardrobe.saveItem]);
 
   // ── Outfit actions ──
   // Convex real-time subscriptions replace loadOutfits + polling entirely.
@@ -1286,7 +1230,7 @@ export function App() {
           <Plus size={19} aria-hidden="true" />
         </button>
       ) : (
-        <WardrobeImportFlow onGarmentApproved={addImportedItem} onModeledApproved={attachImportedModeledImage} />
+        <WardrobeImportFlow />
       )}
     </div>
   );

@@ -35,6 +35,29 @@ const ProductConfidence = v.union(
   v.literal("unknown"),
 );
 
+const JobKind = v.union(v.literal("upload"), v.literal("item"));
+const AnalysisStatus = v.union(
+  v.literal("queued"),
+  v.literal("processing"),
+  v.literal("complete"),
+  v.literal("failed"),
+  v.literal("empty"),
+);
+const StageStatus = v.union(
+  v.literal("pending"),
+  v.literal("processing"),
+  v.literal("review"),
+  v.literal("approved"),
+  v.literal("rejected"),
+  v.literal("failed"),
+);
+const ProductMatchJobStatus = v.union(
+  v.literal("pending"),
+  v.literal("processing"),
+  v.literal("complete"),
+  v.literal("failed"),
+);
+
 // ─── Schema ─────────────────────────────────────────────────────
 
 export default defineSchema({
@@ -112,6 +135,59 @@ export default defineSchema({
   })
     .index("by_user", ["userId"])
     .index("by_user_date", ["userId", "date"]),
+
+  // 7. Import Jobs (multi-stage human-in-the-loop import pipeline)
+  importJobs: defineTable({
+    userId: v.id("users"),
+    kind: JobKind,
+    sourceStorageId: v.optional(v.id("_storage")),  // uploaded photo
+    metadata: v.optional(v.object({
+      name: v.string(),
+      part: v.string(),
+      color: v.string(),
+      secondaryColor: v.optional(v.union(v.string(), v.null())),
+      tags: v.optional(v.array(v.string())),
+      productName: v.optional(v.string()),
+      brand: v.optional(v.string()),
+      productConfidence: v.optional(v.string()),
+      productUrl: v.optional(v.string()),
+    })),
+    analysis: v.optional(v.object({
+      status: AnalysisStatus,
+      error: v.optional(v.string()),
+    })),
+    stages: v.optional(v.object({
+      crop: v.optional(v.object({
+        status: StageStatus,
+        storageId: v.optional(v.id("_storage")),
+        error: v.optional(v.string()),
+      })),
+      garment: v.optional(v.object({
+        status: StageStatus,
+        storageId: v.optional(v.id("_storage")),
+        error: v.optional(v.string()),
+        failedStorageId: v.optional(v.id("_storage")),
+      })),
+      modeled: v.optional(v.object({
+        status: StageStatus,
+        storageId: v.optional(v.id("_storage")),
+        error: v.optional(v.string()),
+      })),
+    })),
+    productMatch: v.optional(v.object({
+      status: ProductMatchJobStatus,
+    })),
+    wardrobeItemId: v.optional(v.id("wardrobeItems")),  // created when garment is approved
+    autoProcess: v.optional(v.boolean()),
+  })
+    .index("by_user", ["userId"]),
+
+  // 8. Model References (styling reference photos for modeled image generation)
+  modelReferences: defineTable({
+    userId: v.id("users"),
+    storageId: v.id("_storage"),
+  })
+    .index("by_user", ["userId"]),
 
   // 6. Credit Ledger (append-only, real source of truth)
   creditLedger: defineTable({
