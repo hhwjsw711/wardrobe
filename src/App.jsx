@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowSquareOut, ArrowsClockwise, Check, CoatHanger, MagnifyingGlass, Plus, SpinnerGap, Trash, X } from "@phosphor-icons/react";
 import { useConvexAuth, useAuthActions } from "@convex-dev/auth/react";
+import { useMutation } from "convex/react";
+import { api } from "../convex/_generated/api";
 import { WardrobeImportFlow } from "./import-flow.jsx";
 import { AuthForm } from "./AuthForm.jsx";
 import { OptimizedImage } from "./OptimizedImage.jsx";
@@ -1003,6 +1005,19 @@ export function App() {
   // ── Auth gate ──
   const { isAuthenticated, isLoading: authLoading } = useConvexAuth();
   const { signOut } = useAuthActions();
+  const provisionUser = useMutation(api.helpers.provisionUser);
+
+  // Persist app-level user defaults (plan, creditBalance) once the
+  // session is authenticated. Idempotent on the backend, so calling it
+  // on every auth-state transition is safe. Covers password + OAuth
+  // (OAuth redirects back to the app, so this effect fires on mount).
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    provisionUser().catch((err) => {
+      console.warn("[provisionUser] failed:", err?.message ?? err);
+    });
+  }, [isAuthenticated, provisionUser]);
+
   if (!isAuthenticated) return <AuthForm />;
 
   // ── Convex-backed data ──

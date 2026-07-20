@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { query, mutation, action } from "./_generated/server";
 import { requireAuthedUserId, ensureUserFields } from "./helpers";
+import { getAuthUserId } from "@convex-dev/auth/server";
 
 // ─── Queries ────────────────────────────────────────────────────
 
@@ -210,7 +211,7 @@ export const analyzePhoto = action({
     storageId: v.id("_storage"), // uploaded photo
   },
   handler: async (ctx, { storageId }) => {
-    const userId = await ctx.auth.getUserId();
+    const userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("Unauthorized");
 
     const imageUrl = await ctx.storage.getUrl(storageId);
@@ -289,7 +290,7 @@ export const productMatch = action({
     itemId: v.id("wardrobeItems"),
   },
   handler: async (ctx, { itemId }) => {
-    const userId = await ctx.auth.getUserId();
+    const userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("Unauthorized");
 
     // Read item from DB
