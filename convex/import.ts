@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { mutation, action, query, internalQuery, internalMutation } from "./_generated/server";
-import { requireAuthedUserId } from "./helpers";
+import { requireAuthedUserId, sanitizeColor } from "./helpers";
 
 // ─── Import Pipeline ────────────────────────────────────────────
 //
@@ -218,8 +218,8 @@ export const createItemJobs = mutation({
         metadata: {
           name: item.name.slice(0, 120),
           part: item.part,
-          color: item.color.toLowerCase(),
-          secondaryColor: item.secondaryColor?.toLowerCase() ?? null,
+          color: (sanitizeColor(item.color) ?? "#d8d0c2") as string,
+          secondaryColor: sanitizeColor(item.secondaryColor),
           tags: (item.tags || []).slice(0, 4).map((t: string) => t.slice(0, 40).toLowerCase()),
         },
         stages: {
@@ -265,11 +265,9 @@ export const updateJobMetadata = mutation({
     const updatedMetadata = { ...(job.metadata || {}) };
     if (metadata.name !== undefined) updatedMetadata.name = metadata.name.slice(0, 120);
     if (metadata.part !== undefined) updatedMetadata.part = metadata.part;
-    if (metadata.color !== undefined) updatedMetadata.color = metadata.color.toLowerCase();
+    if (metadata.color !== undefined) updatedMetadata.color = (sanitizeColor(metadata.color) ?? "#d8d0c2") as string;
     if (metadata.secondaryColor !== undefined) {
-      updatedMetadata.secondaryColor = typeof metadata.secondaryColor === "string"
-        ? metadata.secondaryColor.toLowerCase()
-        : metadata.secondaryColor;
+      updatedMetadata.secondaryColor = sanitizeColor(metadata.secondaryColor);
     }
     if (metadata.tags !== undefined) {
       updatedMetadata.tags = metadata.tags.slice(0, 12).map((t) => t.slice(0, 40).toLowerCase());
@@ -313,8 +311,8 @@ export const approveStage = mutation({
         userId,
         name: meta.name || "New piece",
         part: meta.part as any || "upperbody",
-        color: meta.color || "#d8d0c2",
-        secondaryColor: meta.secondaryColor ?? null,
+        color: (sanitizeColor(meta.color) ?? "#d8d0c2") as string,
+        secondaryColor: sanitizeColor(meta.secondaryColor),
         tags: meta.tags || [],
         garmentStorageId: stages.garment.storageId,
         sourceStorageId: job.sourceStorageId,
@@ -1032,8 +1030,8 @@ export const autoApproveGarment = mutation({
       userId: job.userId,
       name: meta.name || "New piece",
       part: meta.part as any || "upperbody",
-      color: meta.color || "#d8d0c2",
-      secondaryColor: meta.secondaryColor ?? null,
+      color: (sanitizeColor(meta.color) ?? "#d8d0c2") as string,
+      secondaryColor: sanitizeColor(meta.secondaryColor),
       tags: meta.tags || [],
       garmentStorageId,
       sourceStorageId: job.sourceStorageId,

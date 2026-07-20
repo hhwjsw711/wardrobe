@@ -1,6 +1,26 @@
 import { query, mutation } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 
+// ─── Color helpers ────────────────────────────────────────────────
+
+/**
+ * Normalize a color value produced by the OpenAI vision pipeline.
+ *
+ * The schema allows `secondaryColor` to be a string OR null, and the model
+ * usually emits the literal JSON null when there is no secondary color.
+ * Occasionally, however, it returns the string "null" (or "none"/""/etc.),
+ * which then passes the validator as a string and would otherwise land in
+ * the DB verbatim — eventually showing up in the UI palette and triggering
+ * `backgroundColor: "null"` console warnings. This helper shrinks those
+ * sentinel strings back to real null *before* the value is persisted.
+ */
+export function sanitizeColor(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const v = value.trim().toLowerCase();
+  if (!v || v === "null" || v === "undefined" || v === "none") return null;
+  return v;
+}
+
 // ─── Auth helpers ────────────────────────────────────────────────
 
 /** Get the authenticated user ID or return null. */

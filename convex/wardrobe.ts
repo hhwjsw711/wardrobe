@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { query, mutation, action, internalQuery, internalMutation } from "./_generated/server";
-import { requireAuthedUserId, ensureUserFields } from "./helpers";
+import { requireAuthedUserId, ensureUserFields, sanitizeColor } from "./helpers";
 import { getAuthUserId } from "@convex-dev/auth/server";
 
 // ─── Internal helpers (for actions, which lack ctx.db) ───────────
@@ -158,10 +158,8 @@ export const addWardrobeItem = mutation({
     // Clamp fields
     const name = args.name.slice(0, 120);
     const tags = args.tags.slice(0, 12).map((t) => t.slice(0, 40).toLowerCase());
-    const color = args.color.toLowerCase();
-    const secondaryColor = typeof args.secondaryColor === "string"
-      ? args.secondaryColor.toLowerCase()
-      : args.secondaryColor;
+    const color = (sanitizeColor(args.color) ?? "#d8d0c2") as string;
+    const secondaryColor = sanitizeColor(args.secondaryColor);
 
     return ctx.db.insert("wardrobeItems", {
       userId,
@@ -217,8 +215,8 @@ export const updateWardrobeItem = mutation({
     // Clamp
     if (updates.name) updates.name = updates.name.slice(0, 120);
     if (updates.tags) updates.tags = updates.tags.slice(0, 12).map((t) => t.slice(0, 40).toLowerCase());
-    if (updates.color) updates.color = updates.color.toLowerCase();
-    if (typeof updates.secondaryColor === "string") updates.secondaryColor = updates.secondaryColor.toLowerCase();
+    if (updates.color !== undefined) updates.color = (sanitizeColor(updates.color) ?? "#d8d0c2") as string;
+    if (updates.secondaryColor !== undefined) updates.secondaryColor = sanitizeColor(updates.secondaryColor);
     if (updates.part) updates.part = updates.part as any;
     if (updates.productConfidence) updates.productConfidence = updates.productConfidence as any;
     await ctx.db.patch(id, updates);
@@ -313,7 +311,17 @@ export const analyzePhoto = action({
     }
 
     const data = await response.json();
-    return JSON.parse(data.output[0].content[0].text);
+    const parsed = JSON.parse(data.output[0].content[0].text);
+    // Defensively strip sentinel-string colors ("null", "none", "") that
+    // the model occasionally emits before returning to the caller.
+    if (parsed && Array.isArray(parsed.items)) {
+      parsed.items = parsed.items.map((it: any) => ({
+        ...it,
+        color: sanitizeColor(it?.color) ?? "#d8d0c2",
+        secondaryColor: sanitizeColor(it?.secondaryColor),
+      }));
+    }
+    return parsed;
   },
 });
 

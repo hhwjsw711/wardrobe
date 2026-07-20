@@ -28,19 +28,40 @@ const EMPTY_MODEL_REFS = EMPTY_ARRAY;
  * Convex returns: { _id, garmentUrl, modeledUrl, sourceUrl, ... }
  * App.jsx expects: { id, image, thumbnail, modeledImage, palette, ... }
  */
+/**
+ * Normalize color values returned by the AI vision pipeline. The OpenAI
+ * analysis schema allows `secondaryColor` to be null, but in practice the
+ * model occasionally emits the string "null" (or "none"/"undefined"/""),
+ * which then flows through the schema (`v.union(v.string(), v.null())`)
+ * as a string and leaks straight into the UI — showing "null" in the
+ * Selected swatch label and triggering console warnings about
+ * `backgroundColor: "null"` not conforming to #rrggbb.
+ *
+ * Returns the lowercased hex string when the value is a plausible color,
+ * otherwise null. Used both on `item.color` / `item.secondaryColor` and
+ * on every entry of `palette` so the ColorControl never renders an
+ * unusable swatch.
+ */
+function sanitizeColor(value) {
+  if (typeof value !== "string") return null;
+  const v = value.trim().toLowerCase();
+  if (!v || v === "null" || v === "undefined" || v === "none") return null;
+  return v;
+}
+
 function mapWardrobeItem(item) {
   return {
     id: item._id,
     importJobId: item.importJobId || null,
     name: item.name,
     part: item.part,
-    color: item.color,
-    secondaryColor: item.secondaryColor ?? null,
+    color: sanitizeColor(item.color) || "#9a9286",
+    secondaryColor: sanitizeColor(item.secondaryColor),
     tags: item.tags || [],
     image: item.garmentUrl || item.sourceUrl || "",
     thumbnail: item.garmentUrl || item.sourceUrl || "",
     modeledImage: item.modeledUrl || null,
-    palette: [item.color, item.secondaryColor].filter(Boolean),
+    palette: [sanitizeColor(item.color), sanitizeColor(item.secondaryColor)].filter(Boolean),
     brand: item.brand || null,
     productName: item.productName || null,
     productColorway: item.productColorway || null,
@@ -71,6 +92,53 @@ function mapOutfit(outfit) {
     createdAt: new Date(outfit._creationTime).toISOString(),
     error: outfit.error || null,
   };
+}
+
+/**
+ * Map a Convex try-on job to the shape App.jsx expects, and normalize
+ * any pre-sanitizer error messages so legacy jobs show the same friendly
+ * text as new ones. Newer backend messages are already friendly — they
+ * pass through unchanged; only raw API JSON gets scrubbed here.
+ */
+function mapTryonJob(job) {
+  return {
+    id: job._id,
+    outfitId: job.outfitId,
+    status: job.status,
+    imageUrl: job.imageUrl || null,
+    error: sanitizeTryonError(job.error || null),
+    createdAt: new Date(job._creationTime).toISOString(),
+    completedAt: job.completedAt ? new Date(job.completedAt).toISOString() : null,
+  };
+}
+
+/**
+ * Frontend mirror of convex/tryon.ts::friendlyTryonError. Treats errors
+ * already produced by the friendly backend as no-ops, and converts any
+ * historical raw OpenAI JSON into a short user-facing string. This means
+ * jobs that failed before the backend sanitizer shipped still render
+ * cleanly without requiring a data migration.
+ */
+function sanitizeTryonError(raw) {
+  if (!raw) return null;
+  if (typeof raw !== "string") return "Try-on generation failed. Please try again later.";
+  const friendly = raw.trim();
+  // Already-friendly messages pass straight through (no JSON braces, no
+  // HTTP status prefix). Avoids re-wrapping the new backend output.
+  if (!friendly.includes("{") && !/^try-on generation failed: \d/.test(friendly.toLowerCase())) {
+    return friendly;
+  }
+  const lower = friendly.toLowerCase();
+  if (lower.includes("billing") && lower.includes("limit")) {
+    return "Try-on service is temporarily unavailable. Please try again later.";
+  }
+  if (lower.includes("rate limit") || lower.includes("quota")) {
+    return "Too many try-on requests. Please wait a moment and try again.";
+  }
+  if (lower.includes("no outfit image")) return "Outfit image is not ready yet.";
+  if (lower.includes("cannot get outfit image url")) return "Could not load the outfit image. Please try again.";
+  if (lower.includes("no image returned")) return "Try-on service returned no image. Please try again.";
+  return "Try-on generation failed. Please try again later.";
 }
 
 // ─── Wardrobe ────────────────────────────────────────────────────
@@ -186,7 +254,10 @@ export function useConvexTryon(outfitId) {
   );
   const start = useMutation(api.tryon.startTryon);
 
-  const jobs = useMemo(() => rawJobs ?? EMPTY_ARRAY, [rawJobs]);
+  const jobs = useMemo(
+    () => (rawJobs ?? EMPTY_ARRAY).map(mapTryonJob),
+    [rawJobs]
+  );
 
   return {
     jobs,

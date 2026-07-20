@@ -22,6 +22,15 @@ const TYPES = [
 const TYPE_MAP = Object.fromEntries(TYPES.map((type) => [type.id, type]));
 const TYPE_ORDER = Object.fromEntries(TYPES.slice(1).map((type, index) => [type.id, index]));
 
+// Hex color validation — used to keep palette swatches sane. The vision
+// pipeline occasionally emits literal "null"/"" for empty colors; without
+// this filter those values would render as `style={{ backgroundColor: "null" }}`
+// which the browser rejects and the label UI shows "null" as the selected value.
+const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
+function isValidHex(value) {
+  return typeof value === "string" && HEX_COLOR_RE.test(value);
+}
+
 function rgbToHex(red, green, blue) {
   return `#${[red, green, blue].map((value) => Math.max(0, Math.min(255, value)).toString(16).padStart(2, "0")).join("")}`;
 }
@@ -210,6 +219,13 @@ function ColorControl({ label, field, value, palette, onChange, sampling, setSam
     );
   }
 
+  // Defense-in-depth: drop any non-#rrggbb entries so the palette never
+  // renders an unusable swatch. useConvex.js already sanitizes at mapping
+  // time, but extractPalette is run client-side and could in theory return
+  // something unexpected — this guarantees the UI stays valid.
+  const safePalette = Array.isArray(palette) ? palette.filter(isValidHex) : [];
+  const safeValue = isValidHex(value) ? value : (optional ? null : "#9a9286");
+
   return (
     <div className="color-slot">
       <div className="color-slot-heading">
@@ -219,13 +235,13 @@ function ColorControl({ label, field, value, palette, onChange, sampling, setSam
       <label className="selected-color-control">
         <input
           type="color"
-          value={value || "#9a9286"}
+          value={safeValue || "#9a9286"}
           onChange={(event) => onChange(event.target.value)}
           aria-label={`Choose ${label.toLowerCase()}`}
         />
         <span className="selected-color-copy">
           <small>Selected</small>
-          <strong>{value || "Custom"}</strong>
+          <strong>{safeValue || "Custom"}</strong>
         </span>
       </label>
       <div className="suggestion-heading">
@@ -233,11 +249,11 @@ function ColorControl({ label, field, value, palette, onChange, sampling, setSam
         <small>Click to apply</small>
       </div>
       <div className="palette" aria-label={`${label} suggestions from image`}>
-        {palette.map((color) => (
+        {safePalette.map((color) => (
           <button
             type="button"
             key={color}
-            className={value?.toLowerCase() === color.toLowerCase() ? "active" : ""}
+            className={safeValue?.toLowerCase() === color.toLowerCase() ? "active" : ""}
             style={{ backgroundColor: color }}
             onClick={() => onChange(color)}
             aria-label={`Use ${color} as ${label.toLowerCase()}`}
@@ -815,6 +831,28 @@ function OutfitViewer({ outfit, lookNumber, onClose, onDelete, onRegenerate, try
 
           {lookLabel && <div className="outfit-look-number">{lookLabel}</div>}
 
+          <div className="outfit-viewer-photo">
+            {outfit.status === "ready" && outfit.image ? (
+              <img
+                className="outfit-viewer-photo-image"
+                src={outfit.image}
+                alt={outfit.name}
+                crossOrigin="anonymous"
+              />
+            ) : outfit.status === "failed" || outfit.status === "stalled" ? (
+              <div className="outfit-viewer-photo-placeholder">
+                <CoatHanger size={36} weight="light" aria-hidden="true" />
+                <span>Could not generate this outfit.</span>
+              </div>
+            ) : (
+              <div className="outfit-viewer-photo-placeholder">
+                <SpinnerGap size={28} weight="bold" className="spin" aria-hidden="true" />
+                <span>Generating outfit…</span>
+              </div>
+            )}
+          </div>
+
+          <div className="outfit-viewer-pieces-label">What&apos;s in this look</div>
           <div className="outfit-viewer-pieces">
             {garments.length > 0 ? (
               (() => {

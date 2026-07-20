@@ -3,6 +3,67 @@ import { query, mutation, action, internalQuery, internalMutation } from "./_gen
 import { requireAuthedUserId } from "./helpers";
 import { deductTryonImpl } from "./credits";
 
+// ─── Error helpers ─────────────────────────────────────────────────
+
+/**
+ * Map any error thrown during try-on generation to a short, user-facing
+ * message that never exposes the raw OpenAI API JSON (which can include
+ * billing codes, request IDs, and other internals).
+ *
+ * The raw error is still surfaced to the server console for debugging.
+ */
+function friendlyTryonError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error ?? "");
+
+  // Try to extract & classify an OpenAI-style { error: { code, type, message } } body.
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]) as {
+        error?: { code?: string; type?: string; message?: string };
+      };
+      const code = parsed?.error?.code ?? "";
+      const type = parsed?.error?.type ?? "";
+      if (
+        code === "billing_hard_limit_reached" ||
+        code === "insufficient_quota" ||
+        code === "quota_exceeded"
+      ) {
+        return "Try-on service is temporarily unavailable. Please try again later.";
+      }
+      if (code === "rate_limit_exceeded") {
+        return "Too many try-on requests. Please wait a moment and try again.";
+      }
+      if (type === "invalid_request_error" || code === "invalid_api_key") {
+        return "Try-on service is not configured correctly. Please contact support.";
+      }
+    } catch {
+      // Not JSON — fall through to keyword matching.
+    }
+  }
+
+  // Keyword matching for raw text (covers thrown strings without JSON).
+  const lower = raw.toLowerCase();
+  if (lower.includes("billing") && lower.includes("limit")) {
+    return "Try-on service is temporarily unavailable. Please try again later.";
+  }
+  if (lower.includes("rate limit") || lower.includes("quota")) {
+    return "Too many try-on requests. Please wait a moment and try again.";
+  }
+  if (lower.includes("no outfit image")) {
+    return "Outfit image is not ready yet.";
+  }
+  if (lower.includes("cannot get outfit image url")) {
+    return "Could not load the outfit image. Please try again.";
+  }
+  if (lower.includes("no image returned")) {
+    return "Try-on service returned no image. Please try again.";
+  }
+
+  // Default fallback — never expose the raw message verbatim.
+  return "Try-on generation failed. Please try again later.";
+}
+
 // ─── Internal helpers (for actions, which lack ctx.db) ───────────
 
 /** Internal: read a try-on job by ID. */
@@ -191,11 +252,16 @@ export const processTryon = action({
         completedAt: Date.now(),
       });
     } catch (error: any) {
-      // Mark the job as failed first so the user sees the error state.
+      // Log the raw error to the server console for debugging.
+      console.error(`[tryon] processTryon failed for job ${jobId}:`, error);
+      // Mark the job as failed with a friendly, scrubbed message so the
+      // UI never exposes raw OpenAI API JSON (billing codes, request IDs,
+      // etc.) to end users.
+      const friendly = friendlyTryonError(error);
       await ctx.runMutation("tryon:patchTryonJob", {
         jobId,
         status: "failed",
-        error: error.message?.slice(0, 300) || "Unknown error",
+        error: friendly,
       });
       // Refund the 10 credits deducted by startTryon. Uses the internal
       // mutation because scheduler-invoked actions don't carry user auth,
