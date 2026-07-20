@@ -11,16 +11,16 @@ export default defineConfig(({ mode }) => {
       include: ["react", "react-dom/client"],
     },
     server: {
-      host: "0.0.0.0",
-      allowedHosts: ["terminal.local"],
+      host: "127.0.0.1",
+      allowedHosts: ["localhost", "terminal.local", ".ts.net"],
       warmup: {
         clientFiles: ["./src/main.jsx"],
       },
     },
     preview: {
-      host: "0.0.0.0",
+      host: "127.0.0.1",
       port: 4173,
-      allowedHosts: ["localhost"],
+      allowedHosts: ["localhost", ".ts.net"],
     },
     plugins: [react(), responsiveImageApi(), wardrobeOutfitsApi({ env }), wardrobeImportApi({ env })],
   };

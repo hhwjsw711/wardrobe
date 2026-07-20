@@ -1,10 +1,10 @@
 :root {
-  --import-ivory: #f4f0e7;
-  --import-paper: #fbf8f1;
-  --import-ink: #24231f;
-  --import-muted: #77736a;
-  --import-line: rgba(36, 35, 31, 0.16);
-  --import-shadow: 0 18px 55px rgba(42, 37, 28, 0.14);
+  --import-ivory: #e8edef;
+  --import-paper: #f8faf9;
+  --import-ink: #15181a;
+  --import-muted: #62696c;
+  --import-line: rgba(21, 24, 26, 0.16);
+  --import-shadow: 0 18px 55px rgba(25, 36, 41, 0.16);
   --import-ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -55,6 +55,7 @@
 .import-drop-target h2 { margin: 0; font: 500 clamp(24px, 4vw, 42px)/1.05 "Instrument Sans", sans-serif; letter-spacing: -0.035em; }
 .import-drop-target p { max-width: 40ch; margin: 0; color: var(--import-muted); font-size: 14px; }
 .import-setup-warning code { padding: 2px 5px; color: var(--import-ink); background: rgba(36, 35, 31, 0.07); border-radius: 4px; font-size: 0.92em; }
+.import-setup-warning .import-setup-note { max-width: 34ch; font-size: 11px; }
 
 /* Bottom-left launcher that expands from a compact pill into a tool tray. */
 .import-tray {
@@ -103,6 +104,7 @@
 .import-icon-button:hover,
 .import-icon-button:focus-visible { background: rgba(255, 255, 255, 0.12); outline: none; }
 .import-tray__button:active, .import-icon-button:active { transform: scale(0.94); }
+.import-icon-button:disabled { cursor: default; opacity: 0.42; }
 
 .import-tray__actions {
   display: flex;
@@ -119,7 +121,8 @@
 
 .import-tray:hover .import-tray__actions,
 .import-tray:focus-within .import-tray__actions,
-.import-tray.is-expanded .import-tray__actions {
+.import-tray.is-expanded .import-tray__actions,
+.import-tray.is-idle .import-tray__actions {
   max-width: min(420px, calc(100vw - 92px));
   opacity: 1;
   transform: none;
@@ -259,6 +262,31 @@
 .import-color-row { display: grid; grid-template-columns: 52px 1fr; gap: 8px; }
 .import-color-row input[type="color"] { height: 44px; padding: 5px; cursor: pointer; }
 .import-field-error { color: #8a3f35; font-size: 10px; line-height: 1.35; }
+.import-product-match {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(73, 96, 75, 0.28);
+  border-radius: 12px;
+  background: rgba(73, 96, 75, 0.06);
+}
+.import-product-match span { grid-column: 1 / -1; color: #49604b; font-size: 9px; letter-spacing: .11em; text-transform: uppercase; }
+.import-product-match strong { min-width: 0; overflow: hidden; color: var(--import-ink); font-size: 12px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.import-product-match a { color: #49604b; font-size: 10px; text-decoration: underline; text-underline-offset: 3px; }
+.import-reference-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+  color: var(--import-muted);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  font: 500 11px/1.2 "Instrument Sans", sans-serif;
+  cursor: pointer;
+}
+.import-reference-link:disabled { cursor: default; border-color: transparent; opacity: .65; }
 .import-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
 .import-button { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 16px; border: 1px solid var(--import-line); border-radius: 999px; color: var(--import-ink); background: transparent; font: 500 12px/1 "Instrument Sans", sans-serif; cursor: pointer; }
 .import-button--primary { color: var(--import-paper); background: var(--import-ink); border-color: var(--import-ink); }
@@ -290,14 +318,14 @@
 }
 
 @media (hover: none) and (pointer: coarse) {
-  .import-tray:not(.is-expanded):hover .import-tray__actions {
+  .import-tray:not(.is-expanded):not(.is-idle):hover .import-tray__actions {
     max-width: 0;
     opacity: 0;
     transform: translateX(-8px);
     pointer-events: none;
   }
 
-  .import-tray:not(.is-expanded):hover .import-tray__preview {
+  .import-tray:not(.is-expanded):not(.is-idle):hover .import-tray__preview {
     width: 0;
     opacity: 0;
   }

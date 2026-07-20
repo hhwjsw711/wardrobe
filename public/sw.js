@@ -1,5 +1,5 @@
-const CACHE = "open-wardrobe-shell-v1";
-const IMAGE_CACHE = "wardrobe-images-v1";
+const CACHE = "open-wardrobe-shell-v2";
+const IMAGE_CACHE = "wardrobe-images-v2";
 const ACTIVE_CACHES = new Set([CACHE, IMAGE_CACHE]);
 const MAX_IMAGE_ENTRIES = 800;
 const SHELL = ["/", "/manifest.webmanifest"];
@@ -20,6 +20,19 @@ async function fetchAndCacheImage(request, cache) {
   return response;
 }
 
+async function cachedAsset(request, cache, event) {
+  const cached = await cache.match(request);
+  const update = fetch(request).then(async (response) => {
+    if (response.ok && !response.redirected) await cache.put(request, response.clone());
+    return response;
+  });
+  if (cached) {
+    event.waitUntil(update.catch(() => undefined));
+    return cached;
+  }
+  return update;
+}
+
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));
   self.skipWaiting();
@@ -35,9 +48,11 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   const url = new URL(request.url);
-  if (request.method !== "GET" || url.origin !== self.location.origin || url.pathname.startsWith("/api/")) return;
+  if (request.method !== "GET" || url.origin !== self.location.origin) return;
+  const isLibraryImage = url.pathname.startsWith("/api/import/library/");
+  if (url.pathname.startsWith("/api/") && !isLibraryImage) return;
 
-  if (url.pathname.startsWith("/_ipx/")) {
+  if (url.pathname.startsWith("/_ipx/") || isLibraryImage) {
     event.respondWith(caches.open(IMAGE_CACHE).then(async (cache) => {
       const cached = await cache.match(request);
       const update = fetchAndCacheImage(request, cache);
@@ -56,5 +71,7 @@ self.addEventListener("fetch", (event) => {
       caches.open(CACHE).then((cache) => cache.put(request, copy));
       return response;
     }).catch(() => caches.match(request).then((cached) => cached || caches.match("/"))));
+    return;
   }
+  event.respondWith(caches.open(CACHE).then((cache) => cachedAsset(request, cache, event)));
 });

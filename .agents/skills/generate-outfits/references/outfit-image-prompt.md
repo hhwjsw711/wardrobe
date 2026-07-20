@@ -1,18 +1,18 @@
 # Outfit image prompt
 
-Use this template with the identity reference first, then the exact wardrobe cutouts in the listed order. Delete optional clauses that do not apply.
+Use this template with all identity references first, then the exact wardrobe cutouts in the listed order. Replace the image-number placeholders after counting the identity references. Delete optional clauses that do not apply.
 
 ```text
 Use case: identity-preserve
 Asset type: square outfit gallery photograph
 
-Image 1: identity reference for the exact person to preserve.
-Image 2: exact top garment reference.
-Image 3: exact bottom garment reference.
-[Image 4: exact outer-layer reference. Preserve its real construction and closure exactly; never invent a zipper, buttons, placket, or opening.]
-[Image 5: exact shoe or accessory reference.]
+Images 1 through [N]: complementary identity references for the same exact person to preserve.
+Image [N+1]: exact top garment reference.
+Image [N+2]: exact bottom garment reference.
+[Image [N+3]: exact outer-layer reference. Preserve its real construction and closure exactly; never invent a zipper, buttons, placket, or opening.]
+[Image [N+4]: exact shoe or accessory reference.]
 
-Primary request: Create a professional square editorial fashion photograph of the person from Image 1 wearing all of the exact referenced garments, and only those garments.
+Primary request: Create a professional square editorial fashion photograph of the same person shown across Images 1 through [N], wearing all of the exact referenced garments and only those garments. Synthesize the identity references as complementary face, hair, build, skin-tone, and body-proportion evidence; never average them into a different person or show more than one person.
 
 Outfit: [OUTFIT NAME]
 Scene/backdrop: [RESTRAINED REAL-WORLD SETTING].

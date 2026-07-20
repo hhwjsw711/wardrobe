@@ -18,7 +18,7 @@ Do the workflow end to end after receiving the count. Do not stop after returnin
 ## Requirements
 
 - Read and follow the built-in `imagegen` skill before generating images.
-- Require `data/library.json`, enough tops and bottoms for the requested count, and a local identity reference at `data/model-reference.png` or `WARDROBE_MODEL_REFERENCE`.
+- Require `data/library.json`, enough tops and bottoms for the requested count, and at least one local identity reference from `data/model-references/*.png`, legacy `data/model-reference.png`, or `WARDROBE_MODEL_REFERENCE`. Use at most five unique identity photos.
 - Keep every source garment and identity image local and unchanged.
 - Never add `data/`, the identity reference, garment images, or generated photos to Git.
 - Use only wardrobe items that exist in the current database and whose local assets resolve successfully.
@@ -84,7 +84,7 @@ Use stable lowercase hyphenated IDs. Reject duplicate garment combinations even 
 
 Create one generation package per outfit:
 
-1. Identity reference
+1. Up to five unique identity references, all showing the same person
 2. Exact top cutout
 3. Exact bottom cutout
 4. Optional exact outer layer

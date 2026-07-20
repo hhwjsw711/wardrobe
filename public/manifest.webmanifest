@@ -1,12 +1,13 @@
 {
-  "name": "Open Wardrobe",
+  "id": "/",
+  "name": "My Wardrobe",
   "short_name": "Wardrobe",
   "description": "A local-first AI wardrobe gallery.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#f4f0e8",
-  "theme_color": "#f4f0e8",
+  "background_color": "#eef1f2",
+  "theme_color": "#eef1f2",
   "icons": [
     { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
   ]

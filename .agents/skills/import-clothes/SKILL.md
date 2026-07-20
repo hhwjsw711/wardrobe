@@ -11,7 +11,7 @@ Turn photos of worn clothing into source-faithful transparent catalog PNGs and m
 
 Obtain the source-image folder unless the user already supplied it. Resolve relative paths from the repository root. Confirm this is the Wardrobe repository by checking for `package.json`, `scripts/import-job-api.mjs`, and `data/` in `.gitignore`.
 
-At the start, check for the identity reference at `data/model-reference.png` or the local path configured by `WARDROBE_MODEL_REFERENCE`. If neither exists, ask: `Please provide a clear PNG reference photo of yourself for the modeled wardrobe images. What is its local path?` Do not begin modeled generation until the user supplies it. Keep the image local and never add it to Git.
+At the start, collect up to five identity references from `data/model-references/*.png`, plus the legacy `data/model-reference.png` or local file configured by `WARDROBE_MODEL_REFERENCE`. Deduplicate identical files by content. If none exist, ask: `Please provide one or more clear PNG reference photos of yourself for the modeled wardrobe images. What are their local paths?` Do not begin modeled generation until the user supplies at least one. Keep every identity image local and never add it to Git.
 
 Default to direct database import when the user asks to add clothes to Wardrobe. If they only request cutouts, ask for a new output-folder name instead and skip the database step.
 
@@ -68,6 +68,13 @@ Write `$WORK/manifest.json` using this final shape:
       "color": "#172033",
       "secondaryColor": "#f2efe6",
       "tags": ["knit", "fair isle", "zip"],
+      "brand": "Example Brand",
+      "productName": "Alpine Fair Isle Cardigan",
+      "productColorway": "Midnight Navy",
+      "productUrl": "https://example.com/products/alpine-cardigan",
+      "productConfidence": "exact",
+      "productEvidence": ["matching seven-row yoke pattern", "two-way metal zipper"],
+      "productSources": [{"url": "https://example.com/products/alpine-cardigan", "title": "Alpine Fair Isle Cardigan"}],
       "status": "accepted",
       "sourceRefs": ["IMG_1284.jpg", "IMG_1289.jpg"],
       "unknowns": []
@@ -85,6 +92,8 @@ Use only these `part` values:
 - `shoes` — shoes
 
 Use lowercase hyphenated slugs, six-digit hex colors, at most 12 short lowercase tags, and `null` when there is no genuinely distinct secondary color. Keep working records as `status: "generate"` or `status: "hold"`; change a record to `accepted` only after final QA. The import script ignores every non-accepted record.
+
+Research the exact retail product for every focused crop with web and product-image search before generation. Prefer official brand pages and archived official listings, followed by reputable catalog or resale sources. Set `productConfidence` to `exact` only when multiple visible, product-specific details match a sourced listing and distinguish it from similar models; use `likely` for an unproven candidate and `unknown` when the crop cannot support a specific model. Never invent a brand, model, colorway, or URL. Use the specific product name as `name` only for an exact match. Preserve the consulted clickable sources in `productSources`, and carry concrete visible evidence into the garment reconstruction prompt to resolve ambiguous pockets, seams, proportions, and technical construction. The source crop still wins over conflicting web evidence.
 
 ### 3. Prepare focused references
 
@@ -131,14 +140,14 @@ Inspect checkerboard contact sheets of at most 12 items and compare sensitive re
 
 ### 7. Generate modeled photos
 
-Use `data/model-reference.png` as the identity reference unless `WARDROBE_MODEL_REFERENCE` points to another local PNG. If neither exists, ask the user for a clear reference photo before continuing. Never add that photo to Git.
+Use every unique PNG in `data/model-references/` plus the legacy `data/model-reference.png` or `WARDROBE_MODEL_REFERENCE`, capped at five total identity photos. If none exist, ask the user for clear reference photos before continuing. Never add those photos to Git.
 
-For every accepted cutout, use Imagegen with the identity image first and exact garment PNG second. Save a horizontal 3:2 PNG as `$WORK/modeled/SLUG.png` and set `modeledFile` to `SLUG.png` in the manifest.
+For every accepted cutout, use Imagegen with all identity images first and the exact garment PNG last. Save a horizontal 3:2 PNG as `$WORK/modeled/SLUG.png` and set `modeledFile` to `SLUG.png` in the manifest.
 
 Use this generation brief:
 
 ```text
-Create a professional horizontal 3:2 editorial fashion photograph of the person in Image 1 wearing the exact clothing item from Image 2.
+Images 1 through [N] show the same person from complementary angles. Synthesize them as identity and body-shape evidence, not as different people. Create a professional horizontal 3:2 editorial fashion photograph of that same person wearing the exact clothing item from Image [N+1].
 
 Preserve the person's recognizable face, hair, age, build, skin texture, and body proportions. Preserve the featured garment precisely: color, material, fit, construction, pattern, graphics, logos, text, proportions, closure, and distinctive details. Do not redesign, simplify, replace, or reinterpret it.
 

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
@@ -10,6 +10,8 @@ const STAGES = new Set(["crop", "garment", "modeled"]);
 const DECISIONS = new Set(["approve", "reject"]);
 const PARTS = new Set(["upperbody", "wholebody_up", "lowerbody", "accessories_up", "shoes"]);
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+const PRODUCT_CONFIDENCE = new Set(["exact", "likely", "unknown"]);
+const MAX_MODEL_REFERENCES = 5;
 
 function json(res, status, value) {
   res.statusCode = status;
@@ -62,6 +64,120 @@ function normalizeMetadata(value = {}) {
     secondaryColor,
     tags: Array.isArray(metadata.tags) ? metadata.tags.filter((tag) => typeof tag === "string").map((tag) => tag.trim().toLowerCase().slice(0, 40)).filter(Boolean).slice(0, 12) : [],
     boundingBox: normalizeBoundingBox(metadata.boundingBox),
+    brand: typeof metadata.brand === "string" ? metadata.brand.trim().slice(0, 80) || null : null,
+    productName: typeof metadata.productName === "string" ? metadata.productName.trim().slice(0, 160) || null : null,
+    productColorway: typeof metadata.productColorway === "string" ? metadata.productColorway.trim().slice(0, 120) || null : null,
+    productUrl: validHttpUrl(metadata.productUrl),
+    productConfidence: PRODUCT_CONFIDENCE.has(metadata.productConfidence) ? metadata.productConfidence : "unknown",
+    productEvidence: Array.isArray(metadata.productEvidence) ? metadata.productEvidence.filter((item) => typeof item === "string").map((item) => item.trim().slice(0, 180)).filter(Boolean).slice(0, 6) : [],
+    productSources: normalizeProductSources(metadata.productSources),
+  };
+}
+
+function validHttpUrl(value) {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) ? url.href.slice(0, 1000) : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeProductSources(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  return value.flatMap((source) => {
+    const url = validHttpUrl(typeof source === "string" ? source : source?.url);
+    if (!url || seen.has(url)) return [];
+    seen.add(url);
+    return [{ url, title: typeof source?.title === "string" ? source.title.trim().slice(0, 180) || null : null }];
+  }).slice(0, 8);
+}
+
+function normalizeProductMatch(value = {}, responseSources = []) {
+  const confidence = PRODUCT_CONFIDENCE.has(value.confidence) ? value.confidence : "unknown";
+  const sources = normalizeProductSources(Array.isArray(responseSources) ? responseSources : []);
+  const requestedUrl = validHttpUrl(value.sourceUrl);
+  const source = sources.find((item) => item.url === requestedUrl) || sources[0] || null;
+  const hasCandidate = confidence !== "unknown";
+  const brand = hasCandidate && typeof value.brand === "string" ? value.brand.trim().slice(0, 80) || null : null;
+  const productName = hasCandidate && typeof value.productName === "string" ? value.productName.trim().slice(0, 160) || null : null;
+  return {
+    brand,
+    productName,
+    colorway: hasCandidate && typeof value.colorway === "string" ? value.colorway.trim().slice(0, 120) || null : null,
+    confidence: confidence === "exact" && (!brand || !productName || !source) ? "likely" : confidence,
+    evidence: Array.isArray(value.identifyingFeatures) ? value.identifyingFeatures.filter((item) => typeof item === "string").map((item) => item.trim().slice(0, 180)).filter(Boolean).slice(0, 6) : [],
+    summary: typeof value.summary === "string" ? value.summary.trim().slice(0, 400) || null : null,
+    sourceUrl: source?.url || null,
+    sourceTitle: source?.title || null,
+    sources,
+  };
+}
+
+function applyProductMatch(metadata, match) {
+  const exact = match.confidence === "exact" && match.brand && match.productName;
+  const brandTag = match.brand?.toLowerCase();
+  const tags = [...(metadata.tags || []), ...(brandTag ? [brandTag] : [])]
+    .filter((tag, index, values) => values.indexOf(tag) === index)
+    .slice(0, 12);
+  return normalizeMetadata({
+    ...metadata,
+    name: exact ? `${match.brand} ${match.productName}` : metadata.name,
+    tags,
+    brand: match.brand,
+    productName: match.productName,
+    productColorway: match.colorway,
+    productUrl: match.sourceUrl,
+    productConfidence: match.confidence,
+    productEvidence: match.evidence,
+    productSources: match.sources,
+  });
+}
+
+function normalizeLibraryItem(value, existing) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw Object.assign(new Error("item must be an object"), { status: 400 });
+  }
+
+  const name = typeof value.name === "string" ? value.name.trim().slice(0, 120) : existing.name;
+  if (!name) throw Object.assign(new Error("name is required"), { status: 400 });
+
+  const part = value.part === undefined ? existing.part : value.part;
+  if (!PARTS.has(part)) throw Object.assign(new Error("invalid wardrobe category"), { status: 400 });
+
+  const color = value.color === undefined ? existing.color : value.color;
+  if (typeof color !== "string" || !HEX_COLOR.test(color)) {
+    throw Object.assign(new Error("color must be a six-digit hex value"), { status: 400 });
+  }
+
+  const secondaryColor = value.secondaryColor === undefined ? existing.secondaryColor : value.secondaryColor;
+  if (secondaryColor !== null && (typeof secondaryColor !== "string" || !HEX_COLOR.test(secondaryColor))) {
+    throw Object.assign(new Error("secondaryColor must be null or a six-digit hex value"), { status: 400 });
+  }
+
+  const sourceTags = value.tags === undefined ? existing.tags : value.tags;
+  if (!Array.isArray(sourceTags)) throw Object.assign(new Error("tags must be an array"), { status: 400 });
+  const tags = sourceTags
+    .filter((tag) => typeof tag === "string")
+    .map((tag) => tag.trim().toLowerCase().slice(0, 40))
+    .filter(Boolean)
+    .slice(0, 12);
+  const normalizedColor = color.toLowerCase();
+  const normalizedSecondary = secondaryColor?.toLowerCase() || null;
+  const palette = [normalizedColor, normalizedSecondary, ...(existing.palette || [])]
+    .filter((entry, index, entries) => entry && entries.findIndex((candidate) => candidate.toLowerCase() === entry.toLowerCase()) === index)
+    .slice(0, 5);
+
+  return {
+    ...existing,
+    name,
+    part,
+    color: normalizedColor,
+    secondaryColor: normalizedSecondary,
+    palette,
+    tags,
   };
 }
 
@@ -114,6 +230,9 @@ export function buildGarmentPrompt(metadata = {}, chromaKey = "#00ff00") {
   const details = Array.isArray(metadata.tags) && metadata.tags.length
     ? metadata.tags.join(", ")
     : "all visible construction and design details";
+  const productEvidence = metadata.productName
+    ? `\nProduct research: The photograph was matched ${metadata.productConfidence === "exact" ? "with high confidence" : "as a possible match"} to ${[metadata.brand, metadata.productName, metadata.productColorway].filter(Boolean).join(" — ")}. Distinguishing evidence: ${(metadata.productEvidence || []).join("; ") || "the visible construction in the source photograph"}. Use these researched product details to resolve ambiguous seams, pockets, proportions, and technical construction, but let clearly visible evidence in the source photograph win if there is a conflict.`
+    : "";
 
   return `Use case: background-extraction
 Asset type: ecommerce catalog product cutout source
@@ -122,7 +241,7 @@ Input image: The reference photograph shows the exact garment, either by itself 
 
 Primary request: Reconstruct ONLY the complete empty ${name} (${category}) as a clean, front-facing ecommerce catalog product photograph. If a wearer is present, remove them. Remove every other garment, object, and background element. Show the complete item naturally arranged and symmetrical, with no person, body, mannequin, or hanger visible.
 
-Garment fidelity: Preserve the reference garment's exact primary color ${primary}${secondary}, material and texture, silhouette, neckline, sleeves, fastenings, pattern, and distinctive details (${details}). Preserve any clearly legible existing graphic or logo exactly, but do not invent or reinterpret uncertain logos, text, pockets, seams, hardware, colors, or decoration.
+Garment fidelity: Preserve the reference garment's exact primary color ${primary}${secondary}, material and texture, silhouette, neckline, sleeves, fastenings, pattern, and distinctive details (${details}). Preserve any clearly legible existing graphic or logo exactly, but do not invent or reinterpret uncertain logos, text, pockets, seams, hardware, colors, or decoration.${productEvidence}
 
 Composition: Centered straight-on product view. Keep the entire garment inside the frame with generous, even padding on every side. No cropping or truncation.
 
@@ -296,6 +415,41 @@ function stageState() {
   return { status: "pending", decision: null, attempts: 0, assetUrl: null, failedAssetUrl: null, cleanupPreviewUrl: null, cleanupTolerance: 46, cleanupDiagnostics: null, error: null, prompt: null, updatedAt: null };
 }
 
+function analysisState() {
+  return { status: "queued", attempts: 0, detectedCount: null, error: null, updatedAt: null };
+}
+
+function isUploadJob(job) {
+  return job?.kind === "upload";
+}
+
+function isRejectedJob(job) {
+  return !isUploadJob(job) && (
+    job.stages?.crop?.status === "rejected"
+    || job.stages?.garment?.status === "rejected"
+    || job.stages?.modeled?.status === "rejected"
+  );
+}
+
+async function openAIFetch(url, options) {
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetch(url, options);
+      if (attempt === 0 && (response.status === 429 || response.status >= 500)) {
+        await response.arrayBuffer();
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        continue;
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1200));
+    }
+  }
+  throw lastError;
+}
+
 async function openAIEdit({ key, baseUrl, model, prompt, images, size, background, quality }) {
   const form = new FormData();
   form.set("model", model);
@@ -308,7 +462,7 @@ async function openAIEdit({ key, baseUrl, model, prompt, images, size, backgroun
     const normalized = await normalizeImage(image.data);
     form.append("image[]", new Blob([normalized], { type: "image/png" }), image.name?.replace(/\.[^.]+$/, ".png") || `image-${index + 1}.png`);
   }
-  const response = await fetch(`${baseUrl}/images/edits`, {
+  const response = await openAIFetch(`${baseUrl}/images/edits`, {
     method: "POST", headers: { Authorization: `Bearer ${key}` }, body: form,
   });
   const result = await response.json().catch(() => ({}));
@@ -319,7 +473,7 @@ async function openAIEdit({ key, baseUrl, model, prompt, images, size, backgroun
 }
 
 async function openAIAnalyze({ key, baseUrl, model, image, mime }) {
-  const response = await fetch(`${baseUrl}/responses`, {
+  const response = await openAIFetch(`${baseUrl}/responses`, {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -340,30 +494,142 @@ async function openAIAnalyze({ key, baseUrl, model, image, mime }) {
   return parsed.items;
 }
 
+function responseProductSources(result) {
+  const sources = [];
+  for (const output of result.output || []) {
+    for (const source of output.action?.sources || []) sources.push(source);
+    for (const content of output.content || []) {
+      for (const annotation of content.annotations || []) {
+        if (annotation.type === "url_citation") sources.push({ url: annotation.url, title: annotation.title });
+      }
+    }
+  }
+  return normalizeProductSources(sources);
+}
+
+async function openAIProductMatch({ key, baseUrl, model, image, metadata }) {
+  const visualDescription = [metadata.name, ...(metadata.tags || []), metadata.color].filter(Boolean).join(", ");
+  const response = await openAIFetch(`${baseUrl}/responses`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      reasoning: { effort: "low" },
+      tools: [{
+        type: "web_search",
+        search_context_size: "medium",
+        search_content_types: ["text", "image"],
+        image_settings: { max_results: 6, caption: true },
+      }],
+      tool_choice: "required",
+      include: ["web_search_call.action.sources"],
+      input: [{ role: "user", content: [
+        { type: "input_text", text: `Identify the exact retail product shown in this clothing crop. The initial visual description is: ${visualDescription}. Use web search and product-image search to compare the crop with official brand product pages, archived product pages, and reputable catalog or resale listings. Look closely at logos, seams, pocket shapes, hems, waistbands, hardware, fabric, fit, and color blocking. Prefer an official product page when one exists.\n\nReturn confidence \"exact\" only when multiple visible, product-specific details agree with a sourced listing and distinguish this model from similar products. Return \"likely\" for one plausible candidate that is not fully proven. Return \"unknown\" when the photo cannot support a specific model. Never invent a brand, model, colorway, or URL. The source URL must be a page you actually consulted. Keep identifyingFeatures concrete and visible.` },
+        { type: "input_image", image_url: `data:image/png;base64,${image.toString("base64")}`, detail: "high" },
+      ] }],
+      text: { format: { type: "json_schema", name: "product_match", strict: true, schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          brand: { anyOf: [{ type: "string" }, { type: "null" }] },
+          productName: { anyOf: [{ type: "string" }, { type: "null" }] },
+          colorway: { anyOf: [{ type: "string" }, { type: "null" }] },
+          confidence: { type: "string", enum: ["exact", "likely", "unknown"] },
+          identifyingFeatures: { type: "array", items: { type: "string" }, maxItems: 6 },
+          summary: { type: "string" },
+          sourceUrl: { anyOf: [{ type: "string" }, { type: "null" }] },
+          sourceTitle: { anyOf: [{ type: "string" }, { type: "null" }] },
+        },
+        required: ["brand", "productName", "colorway", "confidence", "identifyingFeatures", "summary", "sourceUrl", "sourceTitle"],
+      } } },
+    }),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error?.message || `OpenAI product search failed (${response.status})`);
+  const outputText = result.output_text || result.output?.flatMap((item) => item.content || []).find((item) => item.type === "output_text")?.text;
+  if (!outputText) throw new Error("OpenAI product search returned no structured result");
+  return normalizeProductMatch(JSON.parse(outputText), responseProductSources(result));
+}
+
 export function wardrobeImportApi(options = {}) {
   let root;
   let jobsDir;
   let importedFile;
   let libraryAssetDir;
+  let modelReferencesDir;
+  let importedWrites = Promise.resolve();
   const running = new Map();
+  const pendingTasks = [];
+  let activeTasks = 0;
   const setting = (name, fallback = "") => options.env?.[name] || process.env[name] || fallback;
   const apiBaseUrl = () => setting("OPENAI_API_BASE_URL", "https://api.openai.com/v1").replace(/\/$/, "");
+  const modelReferenceSetting = () => setting("WARDROBE_MODEL_REFERENCE", "data/model-reference.png");
+  const modelReferencePath = () => path.resolve(root, modelReferenceSetting());
+  const modelReferencesDirSetting = () => setting("WARDROBE_MODEL_REFERENCES_DIR");
+  const taskConcurrency = () => Math.max(1, Math.min(4, Number.parseInt(setting("WARDROBE_IMPORT_CONCURRENCY", "2"), 10) || 2));
+  const productLookupEnabled = () => setting("WARDROBE_PRODUCT_LOOKUP", "true").toLowerCase() !== "false";
 
-  async function setupStatus() {
-    const hasApiKey = Boolean(setting("OPENAI_API_KEY").trim());
-    const referenceSetting = setting("WARDROBE_MODEL_REFERENCE", "data/model-reference.png");
-    const referencePath = path.resolve(root, referenceSetting);
-    let hasModelReference = false;
+  function drainTasks() {
+    while (activeTasks < taskConcurrency() && pendingTasks.length) {
+      const queued = pendingTasks.shift();
+      activeTasks += 1;
+      void Promise.resolve()
+        .then(queued.task)
+        .catch((error) => console.error("[wardrobe queue] task failed", { key: queued.key, error: error.message }))
+        .finally(() => {
+          activeTasks -= 1;
+          running.delete(queued.key);
+          queued.finish();
+          drainTasks();
+        });
+    }
+  }
+
+  function enqueueTask(key, task) {
+    if (running.has(key)) return running.get(key);
+    let finish;
+    const promise = new Promise((resolve) => { finish = resolve; });
+    running.set(key, promise);
+    pendingTasks.push({ key, task, finish });
+    drainTasks();
+    return promise;
+  }
+
+  async function loadModelReferences() {
+    const candidates = [];
     try {
-      hasModelReference = (await stat(referencePath)).isFile();
+      candidates.push({ data: await readFile(modelReferencePath()), name: "model-reference.png" });
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
+    const filenames = (await readdir(modelReferencesDir).catch((error) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    })).filter((filename) => filename.toLowerCase().endsWith(".png")).sort();
+    for (const filename of filenames) candidates.push({ data: await readFile(path.join(modelReferencesDir, filename)), name: filename });
+    const seen = new Set();
+    return candidates.filter((candidate) => {
+      const hash = createHash("sha256").update(candidate.data).digest("hex");
+      if (seen.has(hash)) return false;
+      seen.add(hash);
+      return true;
+    }).slice(0, MAX_MODEL_REFERENCES);
+  }
+
+  async function setupStatus(extra = {}) {
+    const hasApiKey = Boolean(setting("OPENAI_API_KEY").trim());
+    const referenceSetting = modelReferenceSetting();
+    const modelReferences = await loadModelReferences();
+    const hasModelReference = modelReferences.length > 0;
     return {
       ready: hasApiKey && hasModelReference,
       hasApiKey,
       hasModelReference,
       modelReference: referenceSetting,
+      modelReferenceCount: modelReferences.length,
+      maxModelReferences: MAX_MODEL_REFERENCES,
+      productLookupEnabled: productLookupEnabled(),
+      ...extra,
     };
   }
 
@@ -383,6 +649,17 @@ export function wardrobeImportApi(options = {}) {
     catch (error) { if (error.code === "ENOENT") return []; throw error; }
   }
 
+  function mutateImported(mutator) {
+    const operation = importedWrites.then(async () => {
+      const records = await loadImported();
+      const result = await mutator(records);
+      await atomicJson(importedFile, result.records);
+      return result.value;
+    });
+    importedWrites = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
+
   async function persistImported(job, includeModeled = false) {
     const id = `import-${job.id}`;
     await mkdir(libraryAssetDir, { recursive: true });
@@ -391,6 +668,9 @@ export function wardrobeImportApi(options = {}) {
       ? path.basename(new URL(job.stages.garment.assetUrl, "http://localhost").pathname)
       : `garment-${job.stages.garment.attempts}.png`;
     await copyFile(path.join(jobsDir, job.id, garmentSource), path.join(libraryAssetDir, garmentName));
+    const sourceName = `${id}-source.png`;
+    const sourceFile = job.internal.cropFile || job.internal.originalFile;
+    if (sourceFile) await copyFile(path.join(jobsDir, job.id, sourceFile), path.join(libraryAssetDir, sourceName));
     let modeledImage = null;
     if (includeModeled) {
       const modeledName = `${id}-modeled.png`;
@@ -401,34 +681,146 @@ export function wardrobeImportApi(options = {}) {
       modeledImage = `${LIBRARY_ASSET_ROOT}/${modeledName}`;
     }
     const metadata = job.metadata || {};
-    const records = await loadImported();
-    const existing = records.find((record) => record.id === id);
-    const record = {
-      id,
-      name: metadata.name || "New piece",
-      part: metadata.part || "upperbody",
-      color: metadata.color || "#d8d0c2",
-      secondaryColor: metadata.secondaryColor || null,
-      palette: [metadata.color, metadata.secondaryColor].filter(Boolean),
-      tags: Array.isArray(metadata.tags) ? metadata.tags : [],
-      image: `${LIBRARY_ASSET_ROOT}/${garmentName}`,
-      thumbnail: `${LIBRARY_ASSET_ROOT}/${garmentName}`,
-      modeledImage: modeledImage || existing?.modeledImage || null,
-      importJobId: job.id,
-    };
-    const next = [...records.filter((item) => item.id !== id), record];
-    await atomicJson(importedFile, next);
-    return record;
+    return mutateImported((records) => {
+      const existing = records.find((record) => record.id === id);
+      const record = {
+        id,
+        name: metadata.name || "New piece",
+        part: metadata.part || "upperbody",
+        color: metadata.color || "#d8d0c2",
+        secondaryColor: metadata.secondaryColor || null,
+        palette: [metadata.color, metadata.secondaryColor].filter(Boolean),
+        tags: Array.isArray(metadata.tags) ? metadata.tags : [],
+        brand: metadata.brand || null,
+        productName: metadata.productName || null,
+        productColorway: metadata.productColorway || null,
+        productUrl: metadata.productUrl || null,
+        productConfidence: metadata.productConfidence || "unknown",
+        productEvidence: Array.isArray(metadata.productEvidence) ? metadata.productEvidence : [],
+        productSources: normalizeProductSources(metadata.productSources),
+        productMatchSummary: job.productMatch?.summary || null,
+        productSourceTitle: job.productMatch?.sourceTitle || null,
+        image: `${LIBRARY_ASSET_ROOT}/${garmentName}`,
+        thumbnail: `${LIBRARY_ASSET_ROOT}/${garmentName}`,
+        sourceImage: `${LIBRARY_ASSET_ROOT}/${sourceName}`,
+        modeledImage: modeledImage || existing?.modeledImage || null,
+        importJobId: job.id,
+      };
+      return {
+        records: [...records.filter((item) => item.id !== id), record],
+        value: record,
+      };
+    });
   }
 
-  async function generate(job, stageName) {
-    const lock = `${job.id}:${stageName}`;
-    if (running.has(lock)) return running.get(lock);
-    const task = (async () => {
+  async function createDetectedJobs(sourceJob, normalizedImage, detected) {
+    const created = [];
+    for (const metadata of detected) {
+      const id = randomUUID();
+      const dir = path.join(jobsDir, id);
+      await mkdir(dir, { recursive: true });
+      const originalFile = "original.png";
+      const cropFile = "crop.png";
+      const croppedImage = await cropDetectedItem(normalizedImage, metadata.boundingBox);
+      await writeFile(path.join(dir, originalFile), normalizedImage);
+      await writeFile(path.join(dir, cropFile), croppedImage);
+      const now = new Date().toISOString();
+      const autoProcess = sourceJob.autoProcess === true;
+      const cropStage = { ...stageState(), status: autoProcess ? "approved" : "review", decision: autoProcess ? "approved" : null, assetUrl: `${ASSET_ROOT}/${id}/${cropFile}`, updatedAt: now };
+      const garmentStage = stageState();
+      if (autoProcess) garmentStage.status = "queued";
+      const job = {
+        id,
+        kind: "garment",
+        autoProcess,
+        status: "active",
+        metadata,
+        productMatch: { status: productLookupEnabled() ? "queued" : "disabled", confidence: "unknown", error: null, updatedAt: now },
+        stages: { crop: cropStage, garment: garmentStage, modeled: stageState() },
+        createdAt: now,
+        updatedAt: now,
+        internal: {
+          originalFile,
+          cropFile,
+          originalMime: "image/png",
+          sourceHash: sourceJob.internal.sourceHash,
+          sourceUploadId: sourceJob.id,
+        },
+      };
+      job.originalAssetUrl = `${ASSET_ROOT}/${id}/${originalFile}`;
+      await saveJob(job);
+      created.push(job);
+    }
+    return created;
+  }
+
+  function analyzeUpload(job) {
+    const lock = `${job.id}:analysis`;
+    return enqueueTask(lock, async () => {
       const current = await loadJob(job.id);
+      if (!isUploadJob(current)) return;
+      current.analysis.status = "processing";
+      current.analysis.error = null;
+      current.analysis.attempts += 1;
+      current.analysis.updatedAt = new Date().toISOString();
+      await saveJob(current);
+      console.log("[wardrobe queue] analysis started", { id: current.id, attempt: current.analysis.attempts });
+      const createdIds = [];
+      try {
+        const sourceFile = path.join(jobsDir, current.id, current.internal.originalFile);
+        const normalizedImage = await readFile(sourceFile);
+        const key = setting("OPENAI_API_KEY");
+        if (!key) throw new Error("OPENAI_API_KEY is not configured");
+        const detected = (await openAIAnalyze({
+          key,
+          baseUrl: apiBaseUrl(),
+          model: setting("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
+          image: normalizedImage,
+          mime: "image/png",
+        })).map(normalizeMetadata);
+        if (!await loadJob(current.id)) return;
+        const created = await createDetectedJobs(current, normalizedImage, detected);
+        createdIds.push(...created.map((item) => item.id));
+        const fresh = await loadJob(current.id);
+        if (!fresh) {
+          await Promise.all(createdIds.map((id) => rm(path.join(jobsDir, id), { recursive: true, force: true })));
+          return;
+        }
+        if (created.length) {
+          await rm(path.join(jobsDir, current.id), { recursive: true, force: true });
+          for (const item of created) {
+            if (item.autoProcess) void generate(item, "garment");
+          }
+        } else {
+          fresh.analysis.status = "empty";
+          fresh.analysis.detectedCount = 0;
+          fresh.analysis.error = null;
+          fresh.analysis.updatedAt = new Date().toISOString();
+          await saveJob(fresh);
+        }
+        console.log("[wardrobe queue] analysis completed", { id: current.id, detected: created.length });
+      } catch (error) {
+        await Promise.all(createdIds.map((id) => rm(path.join(jobsDir, id), { recursive: true, force: true })));
+        const fresh = await loadJob(current.id);
+        if (!fresh) return;
+        fresh.analysis.status = "failed";
+        fresh.analysis.error = error.message;
+        fresh.analysis.updatedAt = new Date().toISOString();
+        await saveJob(fresh);
+        console.error("[wardrobe queue] analysis failed", { id: current.id, error: error.message });
+      }
+    });
+  }
+
+  function generate(job, stageName) {
+    const lock = `${job.id}:${stageName}`;
+    return enqueueTask(lock, async () => {
+      const current = await loadJob(job.id);
+      if (!current?.stages?.[stageName]) return;
       const stage = current.stages[stageName];
       stage.status = "processing"; stage.decision = null; stage.error = null; stage.attempts += 1; stage.updatedAt = new Date().toISOString();
       await saveJob(current);
+      console.log("[wardrobe queue] generation started", { id: current.id, stage: stageName, attempt: stage.attempts });
       let failedAssetUrl = null;
       let chromaKeyUsed = null;
       try {
@@ -440,6 +832,26 @@ export function wardrobeImportApi(options = {}) {
         const original = { data: await readFile(path.join(dir, sourceFile)), mime: "image/png", name: sourceFile };
         let bytes;
         if (stageName === "garment") {
+          if (productLookupEnabled() && current.productMatch?.status !== "complete") {
+            current.productMatch = { ...(current.productMatch || {}), status: "processing", error: null, updatedAt: new Date().toISOString() };
+            await saveJob(current);
+            try {
+              const match = await openAIProductMatch({
+                key,
+                baseUrl: apiBaseUrl(),
+                model: setting("OPENAI_PRODUCT_MODEL", setting("OPENAI_VISION_MODEL", "gpt-5.4-mini")),
+                image: original.data,
+                metadata: current.metadata,
+              });
+              current.metadata = applyProductMatch(current.metadata, match);
+              current.productMatch = { ...match, status: "complete", error: null, updatedAt: new Date().toISOString() };
+              await saveJob(current);
+            } catch (error) {
+              current.productMatch = { ...(current.productMatch || {}), status: "unavailable", confidence: "unknown", error: error.message, updatedAt: new Date().toISOString() };
+              await saveJob(current);
+              console.warn("[wardrobe queue] product search unavailable", { id: current.id, error: error.message });
+            }
+          }
           chromaKeyUsed = chooseChromaKey(current.metadata.color);
           const basePrompt = options.garmentPrompt || buildGarmentPrompt(current.metadata, chromaKeyUsed);
           bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_GARMENT_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1024x1024", images: [original], prompt: current.stages.garment.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.garment.prompt}` : basePrompt });
@@ -453,38 +865,50 @@ export function wardrobeImportApi(options = {}) {
             : `garment-${current.stages.garment.attempts}.png`;
           const garmentFile = path.join(dir, garmentName);
           const garment = { data: await readFile(garmentFile), mime: "image/png", name: "garment.png" };
-          const modelPath = path.resolve(root, setting("WARDROBE_MODEL_REFERENCE", "data/model-reference.png"));
-          let modelData;
-          try {
-            modelData = await readFile(modelPath);
-          } catch (error) {
-            if (error.code === "ENOENT") throw new Error(`Model reference not found at ${modelPath}. Set WARDROBE_MODEL_REFERENCE or add data/model-reference.png.`);
-            throw error;
-          }
-          const model = { data: modelData, mime: "image/png", name: "model.png" };
-          const basePrompt = options.modeledPrompt || "Create a professional horizontal 3:2 editorial fashion photograph of the person in Image 1 wearing the exact garment from Image 2. Preserve the person's recognizable identity, face, hair, age and proportions. Preserve every garment color, material, fit, construction, graphic, logo and distinctive detail. Keep the complete featured item clearly visible and unobstructed, use understated neutral supporting clothes, realistic anatomy, natural light, authentic fabric, a tasteful real-world setting, and leave environmental space around the model. No text, watermark, product mockup, or synthetic appearance.";
-          bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1536x1024", images: [model, garment], prompt: current.stages.modeled.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.modeled.prompt}` : basePrompt });
+          const modelReferences = await loadModelReferences();
+          if (!modelReferences.length) throw new Error("No styling reference photos are saved. Add at least one from Wardrobe setup.");
+          const modelImages = modelReferences.map((reference, index) => ({ data: reference.data, mime: "image/png", name: `person-${index + 1}.png` }));
+          const garmentImageNumber = modelImages.length + 1;
+          const identityImages = modelImages.length === 1 ? "Image 1 shows the person" : `Images 1 through ${modelImages.length} show the same person from different photos`;
+          const basePrompt = options.modeledPrompt || `Create a professional horizontal 3:2 editorial fashion photograph. ${identityImages}; synthesize them as complementary identity and body-shape evidence, not as different people. Show that same recognizable person wearing the exact garment from Image ${garmentImageNumber}. Preserve the person's face, hair, age, skin tone, body proportions, and other stable identity traits across the references. Preserve every garment color, material, fit, construction, graphic, logo, and distinctive detail. Keep the complete featured item clearly visible and unobstructed, use understated neutral supporting clothes, realistic anatomy, natural light, authentic fabric, a tasteful real-world setting, and leave environmental space around the model. Show exactly one person. No text, watermark, product mockup, collage, or synthetic appearance.`;
+          bytes = await openAIEdit({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")), quality: setting("OPENAI_IMAGE_QUALITY", "high"), size: "1536x1024", images: [...modelImages, garment], prompt: current.stages.modeled.prompt ? `${basePrompt}\nUser regeneration direction: ${current.stages.modeled.prompt}` : basePrompt });
         }
         await writeFile(output, bytes);
         const fresh = await loadJob(current.id);
-        fresh.stages[stageName].status = "review";
-        fresh.stages[stageName].assetUrl = `${ASSET_ROOT}/${fresh.id}/${path.basename(output)}`;
-        fresh.stages[stageName].failedAssetUrl = null;
-        fresh.stages[stageName].cleanupPreviewUrl = null;
-        fresh.stages[stageName].cleanupDiagnostics = null;
-        if (chromaKeyUsed) fresh.stages[stageName].chromaKey = chromaKeyUsed;
-        fresh.stages[stageName].updatedAt = new Date().toISOString();
+        if (!fresh?.stages?.[stageName]) return;
+        const completedStage = fresh.stages[stageName];
+        completedStage.status = fresh.autoProcess ? "approved" : "review";
+        completedStage.decision = fresh.autoProcess ? "approved" : null;
+        completedStage.assetUrl = `${ASSET_ROOT}/${fresh.id}/${path.basename(output)}`;
+        completedStage.failedAssetUrl = null;
+        completedStage.cleanupPreviewUrl = null;
+        completedStage.cleanupDiagnostics = null;
+        if (chromaKeyUsed) completedStage.chromaKey = chromaKeyUsed;
+        completedStage.updatedAt = new Date().toISOString();
+        if (fresh.autoProcess && stageName === "garment") {
+          fresh.stages.modeled.status = "queued";
+          fresh.stages.modeled.error = null;
+        }
+        if (fresh.autoProcess && stageName === "modeled") fresh.status = "complete";
         await saveJob(fresh);
+        if (fresh.autoProcess) {
+          await persistImported(fresh, stageName === "modeled");
+          if (stageName === "garment") void generate(fresh, "modeled");
+          else await rm(path.join(jobsDir, fresh.id), { recursive: true, force: true });
+        }
+        console.log("[wardrobe queue] generation completed", { id: current.id, stage: stageName });
       } catch (error) {
         const fresh = await loadJob(current.id);
+        if (!fresh?.stages?.[stageName]) return;
+        fresh.status = "active";
         fresh.stages[stageName].status = "failed"; fresh.stages[stageName].error = error.message; fresh.stages[stageName].updatedAt = new Date().toISOString();
+        if (stageName === "garment" && fresh.autoProcess) fresh.stages.modeled.status = "pending";
         if (typeof failedAssetUrl === "string") fresh.stages[stageName].failedAssetUrl = failedAssetUrl;
         if (chromaKeyUsed) fresh.stages[stageName].chromaKey = chromaKeyUsed;
         await saveJob(fresh);
+        console.error("[wardrobe queue] generation failed", { id: current.id, stage: stageName, error: error.message });
       }
-    })().finally(() => running.delete(lock));
-    running.set(lock, task);
-    return task;
+    });
   }
 
   async function handler(req, res, next) {
@@ -497,16 +921,91 @@ export function wardrobeImportApi(options = {}) {
       if (url.pathname === "/api/import/config" && req.method === "GET") {
         return json(res, 200, await setupStatus());
       }
-      const wardrobeDeleteMatch = url.pathname.match(/^\/api\/import\/wardrobe\/(import-[a-f0-9-]{36})$/i);
-      if (wardrobeDeleteMatch && req.method === "DELETE") {
-        const id = wardrobeDeleteMatch[1];
+      if (url.pathname === "/api/import/model-reference" && req.method === "POST") {
+        const input = await body(req, 75 * 1024 * 1024);
+        const rawImages = Array.isArray(input.imageDataUrls) ? input.imageDataUrls : [input.imageDataUrl || input.imageBase64].filter(Boolean);
+        if (!rawImages.length) throw Object.assign(new Error("Choose at least one reference photo"), { status: 400 });
+        await mkdir(modelReferencesDir, { recursive: true });
+        const existing = await loadModelReferences();
+        const hashes = new Set(existing.map((reference) => createHash("sha256").update(reference.data).digest("hex")));
+        let addedModelReferenceCount = 0;
+        for (const raw of rawImages.slice(0, MAX_MODEL_REFERENCES)) {
+          if (hashes.size >= MAX_MODEL_REFERENCES) break;
+          const image = decodeImage({ imageDataUrl: raw });
+          const normalizedImage = await normalizeImage(image.data);
+          const hash = createHash("sha256").update(normalizedImage).digest("hex");
+          if (hashes.has(hash)) continue;
+          hashes.add(hash);
+          await writeFile(path.join(modelReferencesDir, `${hash}.png`), normalizedImage);
+          addedModelReferenceCount += 1;
+        }
+        return json(res, 200, await setupStatus({ addedModelReferenceCount }));
+      }
+      const wardrobeProductMatch = url.pathname.match(/^\/api\/import\/wardrobe\/(import-[a-f0-9-]{36})\/product-match$/i);
+      if (wardrobeProductMatch && req.method === "POST") {
+        const id = wardrobeProductMatch[1];
         const records = await loadImported();
-        const next = records.filter((record) => record.id !== id);
-        if (next.length === records.length) return json(res, 404, { error: "Imported wardrobe item not found" });
-        await atomicJson(importedFile, next);
+        const existing = records.find((record) => record.id === id);
+        if (!existing) throw Object.assign(new Error("Wardrobe item not found"), { status: 404 });
+        const key = setting("OPENAI_API_KEY");
+        if (!key) throw Object.assign(new Error("OPENAI_API_KEY is not configured"), { status: 503 });
+        const sourceUrl = existing.sourceImage || existing.image;
+        const sourceName = path.basename(new URL(sourceUrl, "http://localhost").pathname);
+        const sourceImage = await readFile(path.join(libraryAssetDir, sourceName));
+        const match = await openAIProductMatch({
+          key,
+          baseUrl: apiBaseUrl(),
+          model: setting("OPENAI_PRODUCT_MODEL", setting("OPENAI_VISION_MODEL", "gpt-5.4-mini")),
+          image: sourceImage,
+          metadata: existing,
+        });
+        const metadata = applyProductMatch(existing, match);
+        const updated = await mutateImported((currentRecords) => {
+          const record = currentRecords.find((item) => item.id === id);
+          if (!record) throw Object.assign(new Error("Wardrobe item not found"), { status: 404 });
+          const nextRecord = {
+            ...record,
+            name: metadata.name,
+            tags: metadata.tags,
+            brand: metadata.brand,
+            productName: metadata.productName,
+            productColorway: metadata.productColorway,
+            productUrl: metadata.productUrl,
+            productConfidence: metadata.productConfidence,
+            productEvidence: metadata.productEvidence,
+            productSources: metadata.productSources,
+            productMatchSummary: match.summary,
+            productSourceTitle: match.sourceTitle,
+          };
+          return { records: currentRecords.map((item) => item.id === id ? nextRecord : item), value: nextRecord };
+        });
+        return json(res, 200, updated);
+      }
+      const wardrobeItemMatch = url.pathname.match(/^\/api\/import\/wardrobe\/(import-[a-f0-9-]{36})$/i);
+      if (wardrobeItemMatch && (req.method === "PATCH" || req.method === "PUT")) {
+        const id = wardrobeItemMatch[1];
+        const input = await body(req, 64 * 1024);
+        const updated = await mutateImported((records) => {
+          const index = records.findIndex((record) => record.id === id);
+          if (index === -1) throw Object.assign(new Error("Wardrobe item not found"), { status: 404 });
+          const item = normalizeLibraryItem(input.item || input, records[index]);
+          const next = [...records];
+          next[index] = item;
+          return { records: next, value: item };
+        });
+        return json(res, 200, updated);
+      }
+      if (wardrobeItemMatch && req.method === "DELETE") {
+        const id = wardrobeItemMatch[1];
+        await mutateImported((records) => {
+          const next = records.filter((record) => record.id !== id);
+          if (next.length === records.length) throw Object.assign(new Error("Wardrobe item not found"), { status: 404 });
+          return { records: next, value: undefined };
+        });
         await Promise.all([
           rm(path.join(libraryAssetDir, `${id}-garment.png`), { force: true }),
           rm(path.join(libraryAssetDir, `${id}-modeled.png`), { force: true }),
+          rm(path.join(libraryAssetDir, `${id}-source.png`), { force: true }),
         ]);
         return json(res, 200, { deleted: true, id });
       }
@@ -538,29 +1037,40 @@ export function wardrobeImportApi(options = {}) {
         const input = await body(req);
         const image = decodeImage(input);
         const normalizedImage = await normalizeImage(image.data);
-        const key = setting("OPENAI_API_KEY");
-        const detected = (await openAIAnalyze({ key, baseUrl: apiBaseUrl(), model: setting("OPENAI_VISION_MODEL", "gpt-5.4-mini"), image: normalizedImage, mime: "image/png" })).map(normalizeMetadata);
-        const jobs = [];
-        for (const metadata of detected) {
-          const id = randomUUID();
-          const dir = path.join(jobsDir, id); await mkdir(dir, { recursive: true });
-          const originalFile = "original.png";
-          const cropFile = "crop.png";
-          const croppedImage = await cropDetectedItem(normalizedImage, metadata.boundingBox);
-          await writeFile(path.join(dir, originalFile), normalizedImage);
-          await writeFile(path.join(dir, cropFile), croppedImage);
-          const now = new Date().toISOString();
-          const cropStage = { ...stageState(), status: "review", assetUrl: `${ASSET_ROOT}/${id}/${cropFile}`, updatedAt: now };
-          const job = { id, status: "active", metadata, stages: { crop: cropStage, garment: stageState(), modeled: stageState() }, createdAt: now, updatedAt: now, internal: { originalFile, cropFile, originalMime: "image/png" } };
-          job.originalAssetUrl = `${ASSET_ROOT}/${id}/${originalFile}`;
-          await saveJob(job); jobs.push(publicJob(job));
-        }
-        return json(res, 202, { jobs, noClothingDetected: jobs.length === 0 });
+        const sourceHash = createHash("sha256").update(normalizedImage).digest("hex");
+        const existingIds = await readdir(jobsDir).catch(() => []);
+        const existing = (await Promise.all(existingIds.map((id) => loadJob(id))))
+          .filter((job) => job?.internal?.sourceHash === sourceHash);
+        if (existing.length) return json(res, 202, { jobs: existing.map(publicJob), deduplicated: true });
+
+        const id = randomUUID();
+        const dir = path.join(jobsDir, id);
+        const originalFile = "original.png";
+        const now = new Date().toISOString();
+        const sourceName = typeof input.metadata?.name === "string" ? input.metadata.name.trim().slice(0, 120) : "Wardrobe photo";
+        const job = {
+          id,
+          kind: "upload",
+          autoProcess: input.autoProcess !== false,
+          status: "active",
+          metadata: { name: sourceName || "Wardrobe photo" },
+          analysis: analysisState(),
+          stages: {},
+          originalAssetUrl: `${ASSET_ROOT}/${id}/${originalFile}`,
+          createdAt: now,
+          updatedAt: now,
+          internal: { originalFile, originalMime: "image/png", sourceHash },
+        };
+        await mkdir(dir, { recursive: true });
+        await writeFile(path.join(dir, originalFile), normalizedImage);
+        await saveJob(job);
+        void analyzeUpload(job);
+        return json(res, 202, { jobs: [publicJob(job)] });
       }
       if (url.pathname === API_ROOT && req.method === "GET") {
         const ids = await readdir(jobsDir).catch(() => []);
         const loadedJobs = (await Promise.all(ids.map((id) => loadJob(id)))).filter(Boolean);
-        const hiddenJobs = loadedJobs.filter((job) => job.status === "complete" || job.stages.crop?.status === "rejected" || job.stages.garment.status === "rejected" || job.stages.modeled.status === "rejected");
+        const hiddenJobs = loadedJobs.filter((job) => job.status === "complete" || isRejectedJob(job));
         await Promise.all(hiddenJobs.map((job) => rm(path.join(jobsDir, job.id), { recursive: true, force: true })));
         const jobs = loadedJobs.filter((job) => !hiddenJobs.includes(job)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
         return json(res, 200, jobs.map(publicJob));
@@ -574,6 +1084,18 @@ export function wardrobeImportApi(options = {}) {
       if (!action && req.method === "DELETE") {
         await rm(path.join(jobsDir, job.id), { recursive: true, force: true });
         return json(res, 200, { deleted: true, id: job.id });
+      }
+      if (isUploadJob(job)) {
+        if (action === "analysis/retry" && req.method === "POST") {
+          if (job.analysis.status !== "failed") throw Object.assign(new Error("Analysis is not ready to retry"), { status: 409 });
+          job.analysis.status = "queued";
+          job.analysis.error = null;
+          job.analysis.updatedAt = new Date().toISOString();
+          await saveJob(job);
+          void analyzeUpload(job);
+          return json(res, 202, publicJob(job));
+        }
+        return json(res, 409, { error: "The uploaded photo is still being analyzed" });
       }
       if (action === "metadata" && (req.method === "PATCH" || req.method === "PUT")) {
         const input = await body(req);
@@ -635,6 +1157,8 @@ export function wardrobeImportApi(options = {}) {
         const startGarment = stageName === "crop" && decision === "approve" && job.stages.garment.status === "pending";
         const startModeled = stageName === "garment" && decision === "approve" && job.stages.modeled.status === "pending";
         if (stageName === "modeled" && decision === "approve") job.status = "complete";
+        if (startGarment) job.stages.garment.status = "queued";
+        if (startModeled) job.stages.modeled.status = "queued";
         await saveJob(job);
         if (decision === "approve" && stageName !== "crop") {
           try {
@@ -670,12 +1194,23 @@ export function wardrobeImportApi(options = {}) {
       jobsDir = path.join(dataDir, "jobs");
       importedFile = path.join(dataDir, "library.json");
       libraryAssetDir = path.join(dataDir, "imported");
+      modelReferencesDir = modelReferencesDirSetting() ? path.resolve(root, modelReferencesDirSetting()) : path.join(dataDir, "model-references");
       await mkdir(jobsDir, { recursive: true });
       await mkdir(libraryAssetDir, { recursive: true });
+      await mkdir(modelReferencesDir, { recursive: true });
       const ids = await readdir(jobsDir).catch(() => []);
       for (const id of ids) {
         const job = await loadJob(id);
         if (!job) continue;
+        if (isUploadJob(job)) {
+          if (["queued", "processing"].includes(job.analysis.status)) {
+            job.analysis.status = "queued";
+            job.analysis.error = null;
+            await saveJob(job);
+            void analyzeUpload(job);
+          }
+          continue;
+        }
         if (job.status === "complete") {
           try {
             await persistImported(job, true);
@@ -689,17 +1224,17 @@ export function wardrobeImportApi(options = {}) {
           }
           continue;
         }
-        if (job.stages.crop?.status === "rejected" || job.stages.garment.status === "rejected" || job.stages.modeled.status === "rejected") {
+        if (isRejectedJob(job)) {
           await rm(path.join(jobsDir, job.id), { recursive: true, force: true });
           continue;
         }
         if (job.stages.crop && job.stages.crop.status !== "approved") continue;
         if (["processing", "queued"].includes(job.stages.garment.status)) {
-          job.stages.garment.status = "pending";
+          job.stages.garment.status = "queued";
           await saveJob(job);
           void generate(job, "garment");
         } else if (job.stages.garment.status === "approved" && ["pending", "processing", "queued"].includes(job.stages.modeled.status)) {
-          job.stages.modeled.status = "pending";
+          job.stages.modeled.status = "queued";
           await saveJob(job);
           void generate(job, "modeled");
         }

@@ -8,6 +8,17 @@ import sharp from "sharp";
 
 const PARTS = new Set(["upperbody", "wholebody_up", "lowerbody", "accessories_up", "shoes"]);
 const HEX = /^#[0-9a-f]{6}$/i;
+const PRODUCT_CONFIDENCE = new Set(["exact", "likely", "unknown"]);
+
+function validHttpUrl(value) {
+  if (typeof value !== "string") return null;
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) ? url.href.slice(0, 1000) : null;
+  } catch {
+    return null;
+  }
+}
 
 function usage(message) {
   if (message) console.error(`Error: ${message}\n`);
@@ -54,6 +65,10 @@ function normalizeItem(item) {
   const tags = Array.isArray(item.tags)
     ? item.tags.filter((tag) => typeof tag === "string").map((tag) => tag.trim().toLowerCase()).filter(Boolean).slice(0, 12)
     : [];
+  const productSources = Array.isArray(item.productSources) ? item.productSources.flatMap((source) => {
+    const url = validHttpUrl(typeof source === "string" ? source : source?.url);
+    return url ? [{ url, title: typeof source?.title === "string" ? source.title.trim().slice(0, 180) || null : null }] : [];
+  }).filter((source, index, sources) => sources.findIndex((candidate) => candidate.url === source.url) === index).slice(0, 8) : [];
   return {
     slug,
     file: item.file || `${slug}.png`,
@@ -63,6 +78,13 @@ function normalizeItem(item) {
     color: item.color.toLowerCase(),
     secondaryColor: item.secondaryColor?.toLowerCase() || null,
     tags,
+    brand: typeof item.brand === "string" ? item.brand.trim().slice(0, 80) || null : null,
+    productName: typeof item.productName === "string" ? item.productName.trim().slice(0, 160) || null : null,
+    productColorway: typeof item.productColorway === "string" ? item.productColorway.trim().slice(0, 120) || null : null,
+    productUrl: validHttpUrl(item.productUrl),
+    productConfidence: PRODUCT_CONFIDENCE.has(item.productConfidence) ? item.productConfidence : "unknown",
+    productEvidence: Array.isArray(item.productEvidence) ? item.productEvidence.filter((value) => typeof value === "string").map((value) => value.trim().slice(0, 180)).filter(Boolean).slice(0, 6) : [],
+    productSources,
   };
 }
 
@@ -151,6 +173,13 @@ for (const item of prepared) {
     secondaryColor: item.secondaryColor,
     palette: [item.color, item.secondaryColor].filter(Boolean),
     tags: item.tags,
+    brand: item.brand,
+    productName: item.productName,
+    productColorway: item.productColorway,
+    productUrl: item.productUrl,
+    productConfidence: item.productConfidence,
+    productEvidence: item.productEvidence,
+    productSources: item.productSources,
     image: assetUrl,
     thumbnail: assetUrl,
     modeledImage: modeledUrl || existing?.modeledImage || null,

@@ -15,6 +15,12 @@ Your clothes, extracted and organized with gpt-image.
 
 ![Modeled wardrobe editor](docs/screenshots/editor.png)
 
+## Private phone + computer setup
+
+For a personal install, keep the app and all wardrobe data on your computer and use Tailscale Serve to reach it privately from your phone. Edits, deletes, and imports from either device share the same local database, and the phone can install Wardrobe on its Home Screen.
+
+[Set up the private personal app →](docs/PERSONAL_SETUP.md)
+
 ## Quick start
 
 ```bash
@@ -25,7 +31,7 @@ cp .env.example .env
 npm run dev
 ```
 
-⚠️ The importer stays disabled until you add `OPENAI_API_KEY` to `.env` and place a PNG reference photo of yourself at `data/model-reference.png`.
+⚠️ The importer stays disabled until you add `OPENAI_API_KEY` to `.env`. On first use, Wardrobe asks you to choose up to five private styling photos from the phone or computer and saves them locally under `data/model-references/`. An existing `data/model-reference.png` still works.
 
 Open [localhost:5173](http://localhost:5173).
 
@@ -38,20 +44,22 @@ $import-clothes Import the clothes from ~/Pictures/outfits, create modeled photo
 $generate-outfits Create modeled outfit ideas from my wardrobe.
 ```
 
-Open the cloned repo in Codex and run either prompt. The import skill asks for a local model-reference PNG when needed, reviews every cutout and modeled photo, then writes to `data/library.json` and `data/imported/`. The outfit skill asks how many looks to create, then curates, generates, verifies, and saves the complete collection under `data/`.
+Open the cloned repo in Codex and run either prompt. The import skill uses the local identity-reference library, reviews every cutout and modeled photo, then writes to `data/library.json` and `data/imported/`. The outfit skill asks how many looks to create, then curates, generates, verifies, and saves the complete collection under `data/`.
 
 ### For agents
 
 If you are setting up Wardrobe for a user, ask how they want to import their clothes:
 
-- **Codex:** Ask for a folder or camera-roll location and a model-reference PNG, then extract, model, and import the individual pieces by following [the bundled import skill](.agents/skills/import-clothes/SKILL.md). Afterward, offer to create a requested number of modeled looks with [the outfit-generation skill](.agents/skills/generate-outfits/SKILL.md).
-- **Web UI:** Help the user configure their own `OPENAI_API_KEY` and `data/model-reference.png`, then let them import through the app.
+- **Codex:** Ask for a folder or camera-roll location and one or more identity-reference PNGs, then extract, model, and import the individual pieces by following [the bundled import skill](.agents/skills/import-clothes/SKILL.md). Afterward, offer to create a requested number of modeled looks with [the outfit-generation skill](.agents/skills/generate-outfits/SKILL.md).
+- **Web UI:** Help the user configure their own `OPENAI_API_KEY`, then let them choose up to five private styling photos during the first import.
 
 ## What it does
 
 - Detects every garment in a photo with the OpenAI Responses API
+- Searches current product pages and product images to identify exact items when the visual evidence supports a match
 - Extracts clean product cutouts with the OpenAI Images API
-- Generates an optional modeled editorial preview
+- Generates an optional modeled editorial preview using up to five photos of the same person
+- Saves phone uploads on the computer before queueing API work, automatically finishes new imports, and resumes unfinished jobs after restarts
 - Keeps originals, jobs, generated images, and the JSON database local in `data/`
 - Supports drag, drop, paste, editing, review, regeneration, and approval
 
@@ -61,9 +69,13 @@ If you are setting up Wardrobe for a user, ask how they want to import their clo
 | --- | --- |
 | `OPENAI_API_KEY` | Required |
 | `OPENAI_VISION_MODEL` | `gpt-5.4-mini` |
+| `OPENAI_PRODUCT_MODEL` | `OPENAI_VISION_MODEL` |
 | `OPENAI_IMAGE_MODEL` | `gpt-image-2` |
 | `OPENAI_IMAGE_QUALITY` | `high` |
+| `WARDROBE_IMPORT_CONCURRENCY` | `2` |
+| `WARDROBE_PRODUCT_LOOKUP` | `true` |
 | `WARDROBE_MODEL_REFERENCE` | `data/model-reference.png` |
+| `WARDROBE_MODEL_REFERENCES_DIR` | `data/model-references` |
 | `WARDROBE_DATA_DIR` | `data` |
 
 ## License
