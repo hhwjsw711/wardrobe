@@ -444,7 +444,7 @@ export const analyzeUpload = action({
     if (!imageUrl) throw new Error("Source image not found");
 
     const baseUrl = process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1";
-    const visionModel = process.env.OPENAI_VISION_MODEL || "gpt-4o-mini";
+    const visionModel = process.env.OPENAI_VISION_MODEL || "gpt-5.4-mini";
 
     const response = await fetch(`${baseUrl}/responses`, {
       method: "POST",
@@ -637,7 +637,7 @@ export const generateGarment = action({
     if (!inputUrl) throw new Error("Input image not found");
 
     const baseUrl = process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1";
-    const imageModel = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
+    const imageModel = process.env.OPENAI_GARMENT_MODEL || process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
 
     // Choose chroma key far from garment color
     const chromaKey = chooseChromaKey(meta.color || "#d8d0c2");
@@ -763,7 +763,7 @@ export const generateModeled = action({
     const modelRefIds = await ctx.runQuery("import:getModelReferencesForUser", { userId });
 
     const baseUrl = process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1";
-    const imageModel = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
+    const imageModel = process.env.OPENAI_MODELED_MODEL || process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
 
     const basePrompt = "Create a professional horizontal 3:2 editorial fashion photograph of the person in Image 1 wearing the exact garment from Image 2. Preserve the person's recognizable identity, face, hair, age and proportions. Preserve every garment color, material, fit, construction, graphic, logo and distinctive detail. Keep the complete featured item clearly visible and unobstructed, use understated neutral supporting clothes, realistic anatomy, natural light, authentic fabric, a tasteful real-world setting, and leave environmental space around the model. No text, watermark, product mockup, or synthetic appearance.";
 
@@ -934,7 +934,7 @@ export const runProductMatch = action({
     if (!imageUrl) return;
 
     const baseUrl = process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1";
-    const model = process.env.OPENAI_PRODUCT_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-4o-mini";
+    const model = process.env.OPENAI_PRODUCT_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-5.4-mini";
 
     const response = await fetch(`${baseUrl}/responses`, {
       method: "POST",

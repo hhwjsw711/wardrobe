@@ -203,7 +203,7 @@ export const processTryon = action({
       // For now, this is a placeholder that mirrors the outfit image
 
       const baseUrl = process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1";
-      const model = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
+      const model = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
 
       const imageResp = await fetch(outfitImageUrl);
       const imageBlob = await imageResp.blob();

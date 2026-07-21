@@ -252,7 +252,7 @@ export const generateOutfitImage = action({
       const baseUrl =
         process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1";
       const model =
-        process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
+        process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
 
       // Download images as blobs for multipart upload
       const imageParts: { filename: string; data: ArrayBuffer }[] = [];
@@ -441,7 +441,7 @@ async function analyzeOutfitImage(
   baseUrl: string,
   imageUrl: string
 ): Promise<{ description: string; tags: string[] }> {
-  const model = process.env.OPENAI_VISION_MODEL || "gpt-4o-mini";
+  const model = process.env.OPENAI_VISION_MODEL || "gpt-5.4-mini";
 
   const response = await fetch(`${baseUrl}/responses`, {
     method: "POST",

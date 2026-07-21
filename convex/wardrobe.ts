@@ -253,7 +253,7 @@ export const analyzePhoto = action({
     if (!imageUrl) throw new Error("Image not found in storage");
 
     const baseUrl = process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1";
-    const model = process.env.OPENAI_VISION_MODEL || "gpt-4o-mini";
+    const model = process.env.OPENAI_VISION_MODEL || "gpt-5.4-mini";
 
     const response = await fetch(`${baseUrl}/responses`, {
       method: "POST",
@@ -342,7 +342,7 @@ export const productMatch = action({
     if (!imageUrl) throw new Error("Garment image not found");
 
     const baseUrl = process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1";
-    const model = process.env.OPENAI_PRODUCT_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-4o-mini";
+    const model = process.env.OPENAI_PRODUCT_MODEL || process.env.OPENAI_VISION_MODEL || "gpt-5.4-mini";
 
     const response = await fetch(`${baseUrl}/responses`, {
       method: "POST",
