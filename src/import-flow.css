@@ -1,10 +1,10 @@
 :root {
-  --import-ivory: #e8edef;
-  --import-paper: #f8faf9;
-  --import-ink: #15181a;
-  --import-muted: #62696c;
-  --import-line: rgba(21, 24, 26, 0.16);
-  --import-shadow: 0 18px 55px rgba(25, 36, 41, 0.16);
+  --import-ivory: #f4f0e7;
+  --import-paper: #fbf8f1;
+  --import-ink: #24231f;
+  --import-muted: #77736a;
+  --import-line: rgba(36, 35, 31, 0.16);
+  --import-shadow: 0 18px 55px rgba(42, 37, 28, 0.14);
   --import-ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 

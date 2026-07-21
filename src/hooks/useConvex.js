@@ -433,7 +433,8 @@ export function useConvexImportFlow() {
 // ─── Credits ─────────────────────────────────────────────────────
 
 export function useConvexCredits() {
-  const balance = useQuery(api.credits.getBalance);
+  const { isAuthenticated } = useConvexAuth();
+  const balance = useQuery(api.credits.getBalance, isAuthenticated ? {} : "skip");
   const grant = useMutation(api.credits.grantMonthlyCredits);
 
   return {

@@ -1,12 +1,12 @@
 @import "@fontsource-variable/instrument-sans";
 
 :root {
-  --paper: #eef1f2;
-  --surface: #f8faf9;
-  --ink: #15181a;
-  --muted: #62696c;
-  --line: #c6ccce;
-  --accent: #31586b;
+  --paper: #f4f0e8;
+  --surface: #fbf8f1;
+  --ink: #191919;
+  --muted: #66625d;
+  --line: #cfc8bc;
+  --accent: #6e302e;
   font-family: "Instrument Sans Variable", "Helvetica Neue", Arial, sans-serif;
   color: var(--ink);
   background: var(--paper);
@@ -1288,7 +1288,7 @@ button { font: inherit; }
 
 .outfit-viewer-description {
   margin: 0;
-  font-family: Georgia, "Iowan Old Style", "Apple Garamond", "Times New Roman", serif;
+  font-family: "Instrument Sans Variable", "Helvetica Neue", Arial, sans-serif;
   font-size: 14px;
   font-style: italic;
   line-height: 1.55;
@@ -1379,6 +1379,10 @@ button { font: inherit; }
   padding: 6px 0 8px;
   font-size: 13px;
   color: var(--muted);
+}
+
+.spin {
+  animation: outfit-spin .8s linear infinite;
 }
 
 .outfit-viewer-tryon-loading .spin,
@@ -1534,8 +1538,8 @@ button { font: inherit; }
   padding: 0;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 50%;
-  background: var(--import-ink);
-  color: var(--import-paper);
+  background: var(--ink);
+  color: var(--paper);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -1607,7 +1611,7 @@ button { font: inherit; }
   width: min(380px, 100%);
   padding: 32px 28px;
   border: 1px solid var(--line);
-  border-radius: 20px;
+  border-radius: 4px;
   background: var(--surface);
 }
 
@@ -1645,7 +1649,7 @@ button { font: inherit; }
   transition: background 120ms ease;
 }
 
-.auth-oauth-button:hover { background: rgba(21, 24, 26, 0.05); }
+.auth-oauth-button:hover { background: rgba(25, 25, 25, 0.07); }
 
 .auth-divider {
   display: grid;
@@ -1759,10 +1763,17 @@ button { font: inherit; }
 
 .sign-out-button:hover {
   color: var(--ink);
-  background: rgba(21, 24, 26, 0.05);
+  background: rgba(25, 25, 25, 0.07);
+}
+
+.credit-balance {
+  margin: 0;
+  font: 500 12px/1 "Instrument Sans Variable", sans-serif;
+  color: var(--accent);
+  opacity: 0.8;
 }
 
 @media (max-width: 640px) {
-  .auth-card { padding: 24px 20px; border-radius: 16px; }
+  .auth-card { padding: 24px 20px; border-radius: 4px; }
   .sign-out-button { display: none; }
 }

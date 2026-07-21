@@ -6,7 +6,7 @@ import { api } from "../convex/_generated/api";
 import { WardrobeImportFlow } from "./import-flow.jsx";
 import { AuthForm } from "./AuthForm.jsx";
 import { OptimizedImage } from "./OptimizedImage.jsx";
-import { useConvexWardrobe, useConvexOutfits, useConvexTryon } from "./hooks/useConvex.js";
+import { useConvexWardrobe, useConvexOutfits, useConvexTryon, useConvexCredits } from "./hooks/useConvex.js";
 
 
 const TYPES = [
@@ -1135,6 +1135,7 @@ export function App() {
   // ── Convex-backed data ──
   const wardrobe = useConvexWardrobe();
   const outfitsHook = useConvexOutfits();
+  const creditsHook = useConvexCredits();
 
   const items = wardrobe.items;
   const loading = wardrobe.loading;
@@ -1280,6 +1281,9 @@ export function App() {
                   ? `${outfits.length} ${outfits.length === 1 ? "outfit" : "outfits"}`
                   : `${items.length} ${items.length === 1 ? "piece" : "pieces"}`}
               </p>
+              {!creditsHook.loading && creditsHook.balance.balance > 0 && (
+                <p className="credit-balance">{creditsHook.balance.balance} credits</p>
+              )}
               <button className="sign-out-button" type="button" onClick={() => signOut()} aria-label="Sign out">Sign out</button>
             </div>
           </div>
