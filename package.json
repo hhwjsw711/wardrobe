@@ -31,9 +31,10 @@
     "@vitejs/plugin-react": "5.0.4",
     "convex": "^1.42.3",
     "ipx": "^3.1.1",
+    "jpeg-js": "^0.4.4",
+    "pngjs": "^7.0.0",
     "react": "19.2.0",
     "react-dom": "19.2.0",
-    "sharp": "^0.34.5",
     "vite": "6.4.3",
     "zod": "^4.4.3"
   }

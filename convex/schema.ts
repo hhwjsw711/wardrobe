@@ -160,6 +160,12 @@ export default defineSchema({
       color: v.string(),
       secondaryColor: v.optional(v.union(v.string(), v.null())),
       tags: v.optional(v.array(v.string())),
+      boundingBox: v.optional(v.object({
+        x: v.number(),
+        y: v.number(),
+        width: v.number(),
+        height: v.number(),
+      })),
       productName: v.optional(v.string()),
       brand: v.optional(v.string()),
       productConfidence: v.optional(v.string()),

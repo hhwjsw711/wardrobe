@@ -138,7 +138,7 @@ export function WardrobeImportFlow() {
     setUploading({ sent: 0, total: images.length });
 
     try {
-      const result = await uploadAndImport(images, true);
+      const result = await uploadAndImport(images, false);
       setUploading({ sent: result.successes, total: images.length });
       if (result.failures.length) {
         setError(`${result.failures.length} ${result.failures.length === 1 ? "photo" : "photos"} could not be uploaded. Choose ${result.failures.length === 1 ? "it" : "them"} again when the connection is stable.`);

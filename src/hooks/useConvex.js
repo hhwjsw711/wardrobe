@@ -286,7 +286,7 @@ export function useConvexImport() {
     generateUploadUrl: async () => {
       return getUrl({});
     },
-    startImport: async (sourceStorageId, autoProcess = true) => {
+    startImport: async (sourceStorageId, autoProcess = false) => {
       return start({ sourceStorageId, autoProcess });
     },
   };
@@ -342,7 +342,7 @@ export function useConvexImportFlow() {
     loading: rawJobs === undefined || setupStatus === undefined,
 
     /** Upload files and start imports. Returns { successes, failures }. */
-    uploadAndImport: async (files, autoProcess = true) => {
+    uploadAndImport: async (files, autoProcess = false) => {
       const images = [...files].filter((file) => file.type.startsWith("image/"));
       if (!images.length) return { successes: 0, failures: [] };
 

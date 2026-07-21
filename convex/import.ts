@@ -202,6 +202,13 @@ export const createItemJobs = mutation({
       color: v.string(),
       secondaryColor: v.optional(v.union(v.string(), v.null())),
       tags: v.optional(v.array(v.string())),
+      boundingBox: v.optional(v.object({
+        x: v.number(),
+        y: v.number(),
+        width: v.number(),
+        height: v.number(),
+      })),
+      cropStorageId: v.optional(v.id("_storage")),
     })),
     autoProcess: v.boolean(),
   },
@@ -221,9 +228,10 @@ export const createItemJobs = mutation({
           color: (sanitizeColor(item.color) ?? "#d8d0c2") as string,
           secondaryColor: sanitizeColor(item.secondaryColor),
           tags: (item.tags || []).slice(0, 4).map((t: string) => t.slice(0, 40).toLowerCase()),
+          boundingBox: item.boundingBox || null,
         },
         stages: {
-          crop: { status: initialCropStatus },
+          crop: { status: initialCropStatus, storageId: item.cropStorageId || undefined },
           garment: { status: initialGarmentStatus },
           modeled: { status: "pending" as const },
         },
@@ -449,7 +457,7 @@ export const analyzeUpload = action({
         input: [{
           role: "user",
           content: [
-            { type: "input_text", text: `Identify every distinct wearable clothing item visible in this image. For each item provide: name (max 60 chars), part (upperbody/lowerbody/wholebody_up/accessories_up/shoes), primary color (hex), secondary color (hex or null), and up to 4 style tags. Return as JSON array.` },
+            { type: "input_text", text: `Identify every distinct wearable clothing item visible in this image. A photo may show one isolated garment or a person wearing several items. Return one record per actual item that should enter a wardrobe. Ignore the person's body and non-wearable background objects. For each item, include a tight bounding box around only that item using integer coordinates normalized to a 1000 by 1000 image: x and y are the top-left corner, followed by width and height. Boxes may overlap when garments overlap, but each box must focus on one distinct item. Use only these category ids: upperbody, wholebody_up, lowerbody, accessories_up, shoes. Suggest a concise specific name, primary hex color, optional genuinely distinct secondary hex color, and 1-4 useful lowercase detail tags.` },
             { type: "input_image", image_url: imageUrl, detail: "high" },
           ],
         }],
@@ -457,25 +465,38 @@ export const analyzeUpload = action({
           format: {
             type: "json_schema",
             name: "wardrobe_items",
+            strict: true,
             schema: {
               type: "object",
               properties: {
                 items: {
                   type: "array",
+                  minItems: 0,
                   maxItems: 8,
                   items: {
                     type: "object",
                     properties: {
-                      name: { type: "string", maxLength: 60 },
+                      name: { type: "string" },
                       part: {
                         type: "string",
-                        enum: ["upperbody", "lowerbody", "wholebody_up", "accessories_up", "shoes"],
+                        enum: ["upperbody", "wholebody_up", "lowerbody", "accessories_up", "shoes"],
                       },
-                      color: { type: "string" },
-                      secondaryColor: { type: ["string", "null"] },
-                      tags: { type: "array", maxItems: 4, items: { type: "string" } },
+                      color: { type: "string", pattern: "^#[0-9A-Fa-f]{6}$" },
+                      secondaryColor: { anyOf: [{ type: "string", pattern: "^#[0-9A-Fa-f]{6}$" }, { type: "null" }] },
+                      tags: { type: "array", items: { type: "string" }, maxItems: 4 },
+                      boundingBox: {
+                        type: "object",
+                        properties: {
+                          x: { type: "integer", minimum: 0, maximum: 999 },
+                          y: { type: "integer", minimum: 0, maximum: 999 },
+                          width: { type: "integer", minimum: 1, maximum: 1000 },
+                          height: { type: "integer", minimum: 1, maximum: 1000 },
+                        },
+                        required: ["x", "y", "width", "height"],
+                        additionalProperties: false,
+                      },
                     },
-                    required: ["name", "part", "color", "secondaryColor", "tags"],
+                    required: ["name", "part", "color", "secondaryColor", "tags", "boundingBox"],
                     additionalProperties: false,
                   },
                 },
@@ -520,12 +541,48 @@ export const analyzeUpload = action({
       return;
     }
 
-    // Create item jobs for each detected item
+    // Generate per-item crops using sharp (via imageActions)
+    const itemsWithCrops: Array<{
+      name: string;
+      part: string;
+      color: string;
+      secondaryColor?: string | null;
+      tags?: string[];
+      boundingBox: { x: number; y: number; width: number; height: number };
+      cropStorageId: string;
+    }> = [];
+
+    for (const item of parsed.items) {
+      const box = item.boundingBox || { x: 0, y: 0, width: 1000, height: 1000 };
+      // Normalize bounding box to 0-999/1-1000 range
+      const bx = Math.max(0, Math.min(999, Math.round(Number(box.x) || 0)));
+      const by = Math.max(0, Math.min(999, Math.round(Number(box.y) || 0)));
+      const bw = Math.max(1, Math.min(1000 - bx, Math.round(Number(box.width) || (1000 - bx))));
+      const bh = Math.max(1, Math.min(1000 - by, Math.round(Number(box.height) || (1000 - by))));
+
+      // Crop using the imageActions helper (Node.js runtime + sharp)
+      const cropStorageId = await ctx.runAction("imageActions:cropDetectedItem", {
+        sourceStorageId,
+        boundingBox: { x: bx, y: by, width: bw, height: bh },
+      });
+
+      itemsWithCrops.push({
+        name: item.name,
+        part: item.part,
+        color: item.color,
+        secondaryColor: item.secondaryColor,
+        tags: item.tags,
+        boundingBox: { x: bx, y: by, width: bw, height: bh },
+        cropStorageId: cropStorageId as string,
+      });
+    }
+
+    // Create item jobs for each detected item (now with crop storage IDs)
     const itemJobIds = await ctx.runMutation("import:createItemJobs", {
       userId,
       uploadJobId: jobId,
       sourceStorageId,
-      items: parsed.items,
+      items: itemsWithCrops,
       autoProcess,
     });
 
@@ -571,8 +628,13 @@ export const generateGarment = action({
     if (!job) throw new Error("Import job not found");
 
     const meta = job.metadata || {};
-    const sourceUrl = await ctx.storage.getUrl(sourceStorageId);
-    if (!sourceUrl) throw new Error("Source image not found");
+    const stages = job.stages || { crop: {}, garment: {}, modeled: {} };
+
+    // Use the crop image (per-item cropped region) if available, otherwise fall back to source
+    const cropStorageId = stages.crop?.storageId;
+    const inputStorageId = cropStorageId || sourceStorageId;
+    const inputUrl = await ctx.storage.getUrl(inputStorageId as any);
+    if (!inputUrl) throw new Error("Input image not found");
 
     const baseUrl = process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1";
     const imageModel = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
@@ -580,12 +642,40 @@ export const generateGarment = action({
     // Choose chroma key far from garment color
     const chromaKey = chooseChromaKey(meta.color || "#d8d0c2");
 
-    const prompt = regeneratePrompt
-      ? `Create a professional ecommerce catalog cutout of this clothing item on a solid ${chromaKey} background. ${regeneratePrompt} Preserve every detail of the garment. The background must be perfectly uniform ${chromaKey}.`
-      : `Create a professional ecommerce catalog cutout of this clothing item on a solid ${chromaKey} background. Preserve every detail of the garment — seams, texture, pattern, and color. The background must be perfectly uniform ${chromaKey} with no shadows, gradients, or artifacts. Do NOT modify the garment in any way.`;
+    // Build detailed garment prompt matching original app's quality
+    const name = meta.name || "clothing item";
+    const category = meta.part || "wardrobe item";
+    const primary = meta.color || "the exact visible color";
+    const secondary = meta.secondaryColor ? ` with distinct secondary color ${meta.secondaryColor}` : "";
+    const details = Array.isArray(meta.tags) && meta.tags.length
+      ? meta.tags.join(", ")
+      : "all visible construction and design details";
 
-    // Download source image
-    const imageResp = await fetch(sourceUrl);
+    const basePrompt = `Use case: background-extraction
+Asset type: ecommerce catalog product cutout source
+
+Input image: The reference photograph shows the exact garment, either by itself or worn by a person. Use it only to identify and reconstruct the garment.
+
+Primary request: Reconstruct ONLY the complete empty ${name} (${category}) as a clean, front-facing ecommerce catalog product photograph. If a wearer is present, remove them. Remove every other garment, object, and background element. Show the complete item naturally arranged and symmetrical, with no person, body, mannequin, or hanger visible.
+
+Garment fidelity: Preserve the reference garment's exact primary color ${primary}${secondary}, material and texture, silhouette, neckline, sleeves, fastenings, pattern, and distinctive details (${details}). Preserve any clearly legible existing graphic or logo exactly, but do not invent or reinterpret uncertain logos, text, pockets, seams, hardware, colors, or decoration.
+
+Composition: Centered straight-on product view. Keep the entire garment inside the frame with generous, even padding on every side. No cropping or truncation.
+
+Background: Perfectly flat, absolutely uniform solid ${chromaKey} chroma-key color, edge-to-edge. No shadows, gradient, texture, vignette, floor, horizon, reflection, or lighting variation.
+
+Lighting: Neutral diffuse product lighting contained on the garment only.
+
+Avoid: person, body, skin, hair, mannequin, hanger, props, other garments, retail tags, cast shadow, contact shadow, reflection, watermark, caption, border, background variation, or chroma spill.
+
+Critical: Use no ${chromaKey} anywhere in the garment. Produce exactly one complete garment with a crisp, separable outer silhouette.`;
+
+    const prompt = regeneratePrompt
+      ? `${basePrompt}\nUser regeneration direction: ${regeneratePrompt}`
+      : basePrompt;
+
+    // Download input image
+    const imageResp = await fetch(inputUrl);
     const imageBlob = await imageResp.blob();
 
     const formData = new FormData();
@@ -629,14 +719,11 @@ export const generateGarment = action({
       return;
     }
 
-    // Upload cutout to Convex storage
-    const uploadUrl = await ctx.storage.generateUploadUrl();
-    const uploadResp = await fetch(uploadUrl, {
-      method: "POST",
-      headers: { "Content-Type": "image/png" },
-      body: Uint8Array.from(atob(imageBase64), (c) => c.charCodeAt(0)),
-    });
-    const { storageId: garmentStorageId } = await uploadResp.json();
+    // Remove chroma key background + frame garment (delegated to Node.js runtime)
+    const { garmentStorageId, failedStorageId: rawFailedStorageId } = await ctx.runAction(
+      "imageActions:processGarmentImage",
+      { imageBase64, chromaKey },
+    );
 
     if (job.autoProcess) {
       // Auto-approve: update stage, create wardrobe item, schedule modeled
@@ -651,6 +738,7 @@ export const generateGarment = action({
         stage: "garment",
         status: "review",
         storageId: garmentStorageId,
+        failedStorageId: rawFailedStorageId,
       });
     }
   },
@@ -995,14 +1083,16 @@ export const updateStageStatus = mutation({
       v.literal("failed"),
     ),
     storageId: v.optional(v.id("_storage")),
+    failedStorageId: v.optional(v.id("_storage")),
     error: v.optional(v.string()),
   },
-  handler: async (ctx, { jobId, stage, status, storageId, error }) => {
+  handler: async (ctx, { jobId, stage, status, storageId, failedStorageId, error }) => {
     const job = await ctx.db.get(jobId);
     if (!job) throw new Error("Not found");
     const stages = job.stages || { crop: {}, garment: {}, modeled: {} };
     const updated = { ...stages[stage], status };
     if (storageId !== undefined) updated.storageId = storageId;
+    if (failedStorageId !== undefined) updated.failedStorageId = failedStorageId;
     if (error !== undefined) updated.error = error;
     stages[stage] = updated;
     await ctx.db.patch(jobId, { stages });
