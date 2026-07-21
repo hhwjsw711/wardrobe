@@ -765,9 +765,11 @@ export const generateModeled = action({
     const baseUrl = process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1";
     const imageModel = process.env.OPENAI_IMAGE_MODEL || "gpt-image-1";
 
+    const basePrompt = "Create a professional horizontal 3:2 editorial fashion photograph of the person in Image 1 wearing the exact garment from Image 2. Preserve the person's recognizable identity, face, hair, age and proportions. Preserve every garment color, material, fit, construction, graphic, logo and distinctive detail. Keep the complete featured item clearly visible and unobstructed, use understated neutral supporting clothes, realistic anatomy, natural light, authentic fabric, a tasteful real-world setting, and leave environmental space around the model. No text, watermark, product mockup, or synthetic appearance.";
+
     const prompt = regeneratePrompt
-      ? `Generate a professional horizontal 3:2 editorial fashion photograph of a person wearing this garment. ${regeneratePrompt} The garment must match exactly — same color, texture, pattern, and fit.`
-      : `Generate a professional horizontal 3:2 editorial fashion photograph of a person wearing this garment. Preserve the person's identity exactly as shown in any reference photos. The garment must match exactly — same color, texture, pattern, and fit. Natural studio lighting, clean background.`;
+      ? `${basePrompt}\nUser regeneration direction: ${regeneratePrompt}`
+      : basePrompt;
 
     // Build multipart with model refs + garment
     const formData = new FormData();
