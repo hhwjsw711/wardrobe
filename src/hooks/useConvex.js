@@ -163,6 +163,7 @@ export function useConvexWardrobe() {
   const removeItem = useMutation(api.wardrobe.deleteWardrobeItem);
   const addItem = useMutation(api.wardrobe.addWardrobeItem);
   const matchProduct = useAction(api.wardrobe.productMatch);
+  const generateModeledAction = useAction(api.wardrobe.generateModeledForItem);
 
   const items = (rawItems ?? []).map(mapWardrobeItem);
 
@@ -192,6 +193,13 @@ export function useConvexWardrobe() {
     identifyProduct: async (id) => {
       // Action runs product match, patches item in DB, returns match data
       return matchProduct({ itemId: id });
+    },
+    generateModeled: async (id, regeneratePrompt) => {
+      // On-demand modeled photo generation for a wardrobe item
+      return generateModeledAction({
+        itemId: id,
+        regeneratePrompt: regeneratePrompt || undefined,
+      });
     },
   };
 }

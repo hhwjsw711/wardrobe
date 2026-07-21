@@ -465,3 +465,96 @@ export const productMatch = action({
     };
   },
 });
+
+/** Internal: patch modeled image storage ID onto a wardrobe item. */
+export const patchModeledImage = internalMutation({
+  args: {
+    itemId: v.id("wardrobeItems"),
+    modeledStorageId: v.id("_storage"),
+  },
+  handler: async (ctx, { itemId, modeledStorageId }) => {
+    await ctx.db.patch(itemId, { modeledStorageId });
+  },
+});
+
+/**
+ * Generate a modeled photo for a wardrobe item on demand.
+ *
+ * This is the on-demand equivalent of import.ts::generateModeled, callable
+ * from the item viewer after the import flow is complete. It reuses the
+ * same prompt, model, and quality settings.
+ */
+export const generateModeledForItem = action({
+  args: {
+    itemId: v.id("wardrobeItems"),
+    regeneratePrompt: v.optional(v.string()),
+  },
+  handler: async (ctx, { itemId, regeneratePrompt }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Unauthorized");
+
+    const item = await ctx.runQuery("wardrobe:getWardrobeItemById", { itemId });
+    if (!item || item.userId !== userId) throw new Error("Not found");
+    if (!item.garmentStorageId) throw new Error("Garment image not found");
+
+    const garmentUrl = await ctx.storage.getUrl(item.garmentStorageId);
+    if (!garmentUrl) throw new Error("Garment image not found");
+
+    const modelRefIds = await ctx.runQuery("import:getModelReferencesForUser", { userId });
+    if (!modelRefIds.length) throw new Error("Add reference photos first");
+
+    const baseUrl = process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1";
+    const imageModel = process.env.OPENAI_MODELED_MODEL || process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
+
+    const basePrompt = "Create a professional horizontal 3:2 editorial fashion photograph of the person in Image 1 wearing the exact garment from Image 2. Preserve the person's recognizable identity, face, hair, age and proportions. Preserve every garment color, material, fit, construction, graphic, logo and distinctive detail. Keep the complete featured item clearly visible and unobstructed, use understated neutral supporting clothes, realistic anatomy, natural light, authentic fabric, a tasteful real-world setting, and leave environmental space around the model. No text, watermark, product mockup, or synthetic appearance.";
+
+    const prompt = regeneratePrompt
+      ? `${basePrompt}\nUser regeneration direction: ${regeneratePrompt}`
+      : basePrompt;
+
+    const formData = new FormData();
+    formData.append("model", imageModel);
+    formData.append("prompt", prompt);
+    formData.append("size", "1536x1024");
+    formData.append("quality", process.env.OPENAI_IMAGE_QUALITY || "high");
+    formData.append("output_format", "png");
+
+    for (let i = 0; i < modelRefIds.length; i++) {
+      const refUrl = await ctx.storage.getUrl(modelRefIds[i]);
+      if (refUrl) {
+        const resp = await fetch(refUrl);
+        formData.append("image[]", await resp.blob(), `ref${i}.png`);
+      }
+    }
+
+    const garmentResp = await fetch(garmentUrl);
+    formData.append("image[]", await garmentResp.blob(), "garment.png");
+
+    const response = await fetch(`${baseUrl}/images/edits`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Image generation failed: ${response.status} - ${errText.substring(0, 300)}`);
+    }
+
+    const result = await response.json();
+    const imageBase64 = result.data?.[0]?.b64_json;
+    if (!imageBase64) throw new Error("No image data in response");
+
+    const uploadUrl = await ctx.storage.generateUploadUrl();
+    const uploadResp = await fetch(uploadUrl, {
+      method: "POST",
+      headers: { "Content-Type": "image/png" },
+      body: Uint8Array.from(atob(imageBase64), (c) => c.charCodeAt(0)),
+    });
+    const { storageId: modeledStorageId } = await uploadResp.json();
+
+    await ctx.runMutation("wardrobe:patchModeledImage", { itemId, modeledStorageId });
+
+    return { success: true };
+  },
+});

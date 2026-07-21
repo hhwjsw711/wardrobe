@@ -58,20 +58,19 @@ export const getImportJobs = query({
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .collect();
 
-    // Filter: only active jobs (not complete, not all stages rejected)
+    // Filter: only active jobs.
+    // Item jobs are active until the garment stage is resolved (approved = complete,
+    // rejected = abandoned). Modeled generation and product match are on-demand
+    // from the wardrobe item viewer, so they are NOT part of the import flow.
     const active = jobs.filter((job) => {
       if (job.kind === "upload") {
-        // Upload jobs are active while analysis is running
         return job.analysis?.status !== "complete" && job.analysis?.status !== "empty";
       }
-      // Item jobs are active until all stages are done
-      const cropDone = job.stages?.crop?.status === "approved"
-        || job.stages?.crop?.status === "rejected";
-      const garmentDone = job.stages?.garment?.status === "approved"
-        || job.stages?.garment?.status === "rejected";
-      const modeledDone = job.stages?.modeled?.status === "approved"
-        || job.stages?.modeled?.status === "rejected";
-      return !(cropDone && garmentDone && modeledDone);
+      const garmentStatus = job.stages?.garment?.status;
+      const cropStatus = job.stages?.crop?.status;
+      if (garmentStatus === "approved" || garmentStatus === "rejected") return false;
+      if (cropStatus === "rejected") return false;
+      return true;
     });
 
     // Resolve storage IDs to URLs
@@ -308,9 +307,10 @@ export const approveStage = mutation({
         sourceStorageId: job.sourceStorageId!,
       });
     } else if (stage === "garment") {
-      // Approve garment → create wardrobe item + start modeled generation
+      // Approve garment → create wardrobe item. Import is now complete.
+      // Modeled photo generation and product match are on-demand from the
+      // wardrobe item viewer to reduce per-garment cost (~$0.20 saved).
       stages.garment = { ...stages.garment, status: "approved" };
-      stages.modeled = { ...stages.modeled, status: "processing" };
       await ctx.db.patch(jobId, { stages });
 
       // Create the wardrobe item from the job's metadata + garment image
@@ -331,14 +331,10 @@ export const approveStage = mutation({
         productConfidence: meta.productConfidence as any,
       });
       await ctx.db.patch(jobId, { wardrobeItemId });
-
-      // Schedule modeled photo generation
-      await ctx.scheduler.runAfter(0, "import:generateModeled", {
-        jobId,
-        garmentStorageId: stages.garment.storageId!,
-      });
+      // Modeled generation is now on-demand from the item viewer.
     } else if (stage === "modeled") {
-      // Approve modeled → update wardrobe item + schedule product match
+      // Approve modeled → update wardrobe item with modeled image.
+      // Product match is on-demand from the item viewer.
       stages.modeled = { ...stages.modeled, status: "approved" };
       await ctx.db.patch(jobId, { stages });
 
@@ -348,11 +344,6 @@ export const approveStage = mutation({
           modeledStorageId: stages.modeled.storageId,
         });
       }
-
-      // Schedule product match
-      await ctx.scheduler.runAfter(0, "import:runProductMatch", {
-        jobId,
-      });
     }
   },
 });
@@ -1113,7 +1104,6 @@ export const autoApproveGarment = mutation({
 
     const stages = job.stages || { crop: {}, garment: {}, modeled: {} };
     stages.garment = { ...stages.garment, status: "approved", storageId: garmentStorageId };
-    stages.modeled = { ...stages.modeled, status: "processing" };
     await ctx.db.patch(jobId, { stages });
 
     // Create wardrobe item
@@ -1134,12 +1124,7 @@ export const autoApproveGarment = mutation({
       productConfidence: meta.productConfidence as any,
     });
     await ctx.db.patch(jobId, { wardrobeItemId });
-
-    // Schedule modeled photo generation
-    await ctx.scheduler.runAfter(0, "import:generateModeled", {
-      jobId,
-      garmentStorageId,
-    });
+    // Modeled generation is now on-demand from the item viewer.
   },
 });
 
@@ -1163,11 +1148,7 @@ export const autoApproveModeled = mutation({
         modeledStorageId,
       });
     }
-
-    // Schedule product match
-    await ctx.scheduler.runAfter(0, "import:runProductMatch", {
-      jobId,
-    });
+    // Product match is now on-demand from the item viewer.
   },
 });
 

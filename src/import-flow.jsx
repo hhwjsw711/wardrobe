@@ -26,7 +26,7 @@ function deriveStatus(job) {
   if (modeled?.status === "review") return { tone: "ready", text: "Modeled image ready for review" };
   if (modeled?.status === "processing") return { tone: "processing", text: "Styling modeled image" };
   if (garment?.status === "review") return { tone: "ready", text: "Ready for review" };
-  if (garment?.status === "approved") return { tone: "processing", text: "Creating modeled image" };
+  if (garment?.status === "approved") return { tone: "complete", text: "Added to wardrobe" };
   if (crop?.status === "review") return { tone: "ready", text: "Crop ready for review" };
   if (crop?.status === "approved" && garment?.status === "pending") return { tone: "processing", text: "Starting garment generation" };
   if (crop?.status === "approved" && garment?.status === "processing") return { tone: "processing", text: "Creating garment image" };

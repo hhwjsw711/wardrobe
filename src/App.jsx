@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowSquareOut, ArrowsClockwise, Check, CoatHanger, MagnifyingGlass, Plus, SpinnerGap, Trash, X } from "@phosphor-icons/react";
+import { ArrowSquareOut, ArrowsClockwise, Check, CoatHanger, MagnifyingGlass, Plus, SpinnerGap, Trash, UserFocus, X } from "@phosphor-icons/react";
 import { useConvexAuth, useAuthActions } from "@convex-dev/auth/react";
 import { useMutation } from "convex/react";
 import { api } from "../convex/_generated/api";
@@ -329,7 +329,7 @@ function ItemEditor({ draft, setDraft, palette, sampling, setSampling, sampleSta
   );
 }
 
-function ItemViewer({ item, onClose, onSave, onDelete, onIdentifyProduct }) {
+function ItemViewer({ item, onClose, onSave, onDelete, onIdentifyProduct, onGenerateModeled }) {
   const closeButtonRef = useRef(null);
   const imageRef = useRef(null);
   const samplingCanvasRef = useRef(null);
@@ -344,6 +344,7 @@ function ItemViewer({ item, onClose, onSave, onDelete, onIdentifyProduct }) {
   const [actionError, setActionError] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [matchingProduct, setMatchingProduct] = useState(false);
+  const [generatingModeled, setGeneratingModeled] = useState(false);
   const type = TYPE_MAP[item.part]?.singular || "Wardrobe item";
   const hasModeledImage = Boolean(item.modeledImage);
   const pieceRotation = useMemo(() => {
@@ -411,6 +412,7 @@ function ItemViewer({ item, onClose, onSave, onDelete, onIdentifyProduct }) {
     setActionError("");
     setConfirmingDelete(false);
     setMatchingProduct(false);
+    setGeneratingModeled(false);
     setPalette(item.palette || []);
     setDraft({ name: item.name || "", part: item.part, color: item.color || "#9a9286", secondaryColor: item.secondaryColor || null, tags: [...(item.tags || [])] });
   }, [item]);
@@ -460,6 +462,19 @@ function ItemViewer({ item, onClose, onSave, onDelete, onIdentifyProduct }) {
       setActionError(error.message);
     } finally {
       setMatchingProduct(false);
+    }
+  };
+
+  const generateModeled = async () => {
+    setGeneratingModeled(true);
+    setActionError("");
+    try {
+      await onGenerateModeled(item.id);
+      setSampleStatus("Modeled photo generated. It will appear above shortly.");
+    } catch (error) {
+      setActionError(error.message);
+    } finally {
+      setGeneratingModeled(false);
     }
   };
 
@@ -549,6 +564,14 @@ function ItemViewer({ item, onClose, onSave, onDelete, onIdentifyProduct }) {
           setSampling={setSampling}
           sampleStatus={sampleStatus}
         />
+
+        <section className="product-evidence" aria-label="Modeled photo">
+          <div className="product-evidence__heading"><div><span>Modeled photo</span><strong>{hasModeledImage ? "Photo ready" : "Not generated yet"}</strong></div></div>
+          {!hasModeledImage && <p>Creates a photo of you wearing this piece using your reference photos.</p>}
+          <div className="product-evidence__actions">
+            <button type="button" onClick={generateModeled} disabled={saving || generatingModeled || isDirty} title={isDirty ? "Save your edits before generating" : undefined}>{generatingModeled ? <SpinnerGap size={14} className="product-match-spinner" /> : <UserFocus size={14} />} {generatingModeled ? "Generating..." : hasModeledImage ? "Regenerate photo" : "Generate modeled photo"}</button>
+          </div>
+        </section>
 
         <section className="product-evidence" aria-label="Product identification">
           <div className="product-evidence__heading"><div><span>Product match</span><strong>{item.productName ? [item.brand, item.productName].filter(Boolean).join(" ") : "Not identified yet"}</strong></div>{item.productConfidence && item.productConfidence !== "unknown" && <em data-confidence={item.productConfidence}>{item.productConfidence === "exact" ? "Exact" : "Possible"}</em>}</div>
@@ -1225,6 +1248,14 @@ export function App() {
     }
   };
 
+  const generateModeled = async (id) => {
+    try {
+      await wardrobe.generateModeled(id);
+    } catch (requestError) {
+      throw new Error(requestError.message || "Could not generate modeled photo.");
+    }
+  };
+
   // ── Outfit actions ──
   // Convex real-time subscriptions replace loadOutfits + polling entirely.
 
@@ -1344,7 +1375,7 @@ export function App() {
         )}
       </main>
 
-      {selectedItem && <ItemViewer item={selectedItem} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} onIdentifyProduct={identifyProduct} />}
+      {selectedItem && <ItemViewer item={selectedItem} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} onIdentifyProduct={identifyProduct} onGenerateModeled={generateModeled} />}
       {selectedOutfit && (
         <OutfitViewer
           outfit={selectedOutfit}
