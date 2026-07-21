@@ -15,11 +15,15 @@
     "personal:install": "node scripts/personal-service.mjs install",
     "personal:uninstall": "node scripts/personal-service.mjs uninstall",
     "test": "node --test tests/*.test.mjs",
-    "check": "npm test && npm run build"
+    "check": "npm test && npm run build",
+    "deploy:static": "npx @convex-dev/static-hosting upload --build",
+    "deploy:static:prod": "npx @convex-dev/static-hosting upload --build --prod",
+    "deploy:all": "npx @convex-dev/static-hosting deploy"
   },
   "dependencies": {
     "@auth/core": "^0.41.1",
     "@convex-dev/auth": "^0.0.94",
+    "@convex-dev/static-hosting": "^0.1.4",
     "@fontsource-variable/instrument-sans": "^5.2.8",
     "@modelcontextprotocol/server": "^2.0.0-beta.4",
     "@phosphor-icons/react": "^2.1.10",

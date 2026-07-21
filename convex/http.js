@@ -2,11 +2,17 @@ import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { auth } from "./auth";
 import { handleMcpRequest, handleCorsPreflight } from "./mcp";
+import { registerStaticRoutes } from "@convex-dev/static-hosting";
+import { components } from "./_generated/api";
 
 const http = httpRouter();
 
 // Auth routes
 auth.addHttpRoutes(http);
+
+// Static hosting routes — serves the built frontend from Convex storage.
+// SPA fallback enabled so client-side routing works for all paths.
+registerStaticRoutes(http, components.selfHosting);
 
 // ─── MCP endpoint ────────────────────────────────────────────────
 // POST /mcp — handles JSON-RPC requests (initialize, tools/list, tools/call)
