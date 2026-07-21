@@ -227,6 +227,7 @@ export function WardrobeImportFlow() {
     setBusyId(refId); setError("");
     try {
       await deleteModelReference(refId);
+      setNotice(null);
     } catch (requestError) { setError(requestError.message); }
     finally { setBusyId(null); }
   };
@@ -236,16 +237,17 @@ export function WardrobeImportFlow() {
   const missingModelReference = setup?.hasModelReference === false;
   const setupRequired = setup?.ready === false;
   const setupLabel = missingApiKey ? "Cloud setup needed" : missingModelReference ? "Add your photo" : "Setup required";
+  const referenceCount = setup?.modelReferenceCount || 0;
+  const referencesFull = referenceCount >= (setup?.maxModelReferences || 5);
   const uploadStatus = uploading ? { tone: "processing", text: `Saving ${Math.min(uploading.sent + 1, uploading.total)} of ${uploading.total}` } : null;
-  const activeStatus = setupRequired ? { tone: missingApiKey ? "error" : "setup", text: setupLabel } : uploadStatus || (active ? deriveStatus(active) : notice);
+  const refNotice = referenceCount > 0 ? { tone: "complete", text: `${referenceCount} reference ${referenceCount === 1 ? "photo" : "photos"} saved` } : notice;
+  const activeStatus = setupRequired ? { tone: missingApiKey ? "error" : "setup", text: setupLabel } : uploadStatus || (active ? deriveStatus(active) : refNotice);
   const readyCount = jobs.filter((job) => deriveStatus(job).tone === "ready").length;
   const selectedReviewJob = jobs.find((job) => job.id === selectedReviewId && reviewStageFor(job));
   const reviewJob = selectedReviewJob || jobs.find((job) => reviewStageFor(job)) || active;
   const reviewStage = reviewJob ? reviewStageFor(reviewJob) : null;
   const progress = 0;
   const hasImportActivity = Boolean(jobs.length || notice || setupRequired || uploading);
-  const referenceCount = setup?.modelReferenceCount || 0;
-  const referencesFull = referenceCount >= (setup?.maxModelReferences || 5);
 
   return (
     <>
