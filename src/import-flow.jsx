@@ -263,13 +263,13 @@ export function WardrobeImportFlow() {
             <p className="import-setup-note">These photos are used together to keep your identity and proportions consistent in modeled styling.</p>
             <div className="import-card-list">
               {modelReferences.map((ref) => (
-                <article className="import-card is-complete" key={ref._id}>
-                  <img className="import-card__image" src={ref.assetUrl} alt="Styling reference" />
+                <article className="import-card is-complete" key={ref.id}>
+                  <img className="import-card__image" src={ref.url} alt="Styling reference" />
                   <div className="import-card__body">
                     <h3 className="import-card__title">Styling photo</h3>
                   </div>
                   <div className="import-card__actions">
-                    <button className="import-icon-button import-card__delete" disabled={busyId === ref._id} onClick={() => handleDeleteModelRef(ref._id)} aria-label="Delete styling photo"><Trash size={16} /></button>
+                    <button className="import-icon-button import-card__delete" disabled={busyId === ref.id} onClick={() => handleDeleteModelRef(ref.id)} aria-label="Delete styling photo"><Trash size={16} /></button>
                   </div>
                 </article>
               ))}
