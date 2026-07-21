@@ -2,62 +2,48 @@
 
 import { v } from "convex/values";
 import { action } from "./_generated/server";
-import { PNG } from "pngjs";
-import jpeg from "jpeg-js";
+import sharp from "sharp";
 
 // ─── Image processing actions (Node.js runtime) ────────────────────
-// Pure JavaScript image processing using pngjs + jpeg-js.
-// No native addons required — works in Convex's Node.js runtime.
+// Mirrors the original upstream pipeline (scripts/import-job-api.mjs):
+//   cropDetectedItem — sharp-based crop with EXIF-aware normalize
+//   processGarmentImage — removeChromaBackground + frameTransparentGarment + verify
+// sharp is listed in convex.json "externalPackages" so Convex installs
+// the linux-arm64 build in its Node.js runtime.
 
-/** Decode an image buffer (PNG or JPEG) to raw RGBA pixels. */
-function decodeImage(buffer: Buffer): { data: Buffer; width: number; height: number } {
-  // JPEG signature: FF D8
-  if (buffer[0] === 0xff && buffer[1] === 0xd8) {
-    const imageData = jpeg.decode(buffer, { maxResolutionInMP: 50 });
-    return { data: Buffer.from(imageData.data), width: imageData.width, height: imageData.height };
-  }
-  // PNG signature: 89 50 4E 47
-  const png = PNG.sync.read(buffer);
-  return { data: png.data, width: png.width, height: png.height };
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+
+function normalizeBoundingBox(value: { x: number; y: number; width: number; height: number }) {
+  const number = (key: "x" | "y" | "width" | "height", fallback: number) =>
+    Number.isFinite(Number(value[key])) ? Math.round(Number(value[key])) : fallback;
+  const x = Math.max(0, Math.min(999, number("x", 0)));
+  const y = Math.max(0, Math.min(999, number("y", 0)));
+  const width = Math.max(1, Math.min(1000 - x, number("width", 1000 - x)));
+  const height = Math.max(1, Math.min(1000 - y, number("height", 1000 - y)));
+  return { x, y, width, height };
 }
 
-/** Encode raw RGBA pixels to PNG buffer. */
-function encodePNG(data: Buffer, width: number, height: number): Buffer {
-  const png = new PNG({ width, height });
-  data.copy(png.data);
-  return PNG.sync.write(png);
+async function normalizeImage(bytes: Buffer): Promise<Buffer> {
+  return sharp(bytes).rotate().toColorspace("srgb").png().toBuffer();
 }
 
-/** Bilinear resize of RGBA pixel data. */
-function resizeRGBA(
-  src: Buffer, srcW: number, srcH: number,
-  dstW: number, dstH: number,
-): Buffer {
-  const dst = Buffer.alloc(dstW * dstH * 4);
-  for (let y = 0; y < dstH; y++) {
-    for (let x = 0; x < dstW; x++) {
-      const srcX = x * (srcW - 1) / Math.max(1, dstW - 1);
-      const srcY = y * (srcH - 1) / Math.max(1, dstH - 1);
-      const x0 = Math.floor(srcX);
-      const y0 = Math.floor(srcY);
-      const x1 = Math.min(x0 + 1, srcW - 1);
-      const y1 = Math.min(y0 + 1, srcH - 1);
-      const fx = srcX - x0;
-      const fy = srcY - y0;
-
-      for (let c = 0; c < 4; c++) {
-        const v00 = src[(y0 * srcW + x0) * 4 + c];
-        const v10 = src[(y0 * srcW + x1) * 4 + c];
-        const v01 = src[(y1 * srcW + x0) * 4 + c];
-        const v11 = src[(y1 * srcW + x1) * 4 + c];
-        dst[(y * dstW + x) * 4 + c] = Math.round(
-          v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy) +
-          v01 * (1 - fx) * fy + v11 * fx * fy,
-        );
-      }
+function removeKeyedSpill(data: Buffer, index: number, keyedChannels: number[], neutralLevel: number) {
+  let remaining = Math.ceil(
+    keyedChannels.reduce((total, channel) => total + data[index + channel], 0)
+    - (neutralLevel * keyedChannels.length),
+  );
+  let active = keyedChannels.filter((channel) => data[index + channel] > 0);
+  while (remaining > 0 && active.length) {
+    const share = Math.ceil(remaining / active.length);
+    const next: number[] = [];
+    for (const channel of active) {
+      const reduction = Math.min(data[index + channel], share, remaining);
+      data[index + channel] -= reduction;
+      remaining -= reduction;
+      if (data[index + channel] > 0) next.push(channel);
     }
+    active = next;
   }
-  return dst;
 }
 
 /** Crop a detected clothing item from the source image using bounding box coordinates.
@@ -76,49 +62,28 @@ export const cropDetectedItem = action({
     const sourceUrl = await ctx.storage.getUrl(sourceStorageId);
     if (!sourceUrl) throw new Error("Source image not found");
 
-    // Download source image
     const sourceResp = await fetch(sourceUrl);
     const sourceBuffer = Buffer.from(await sourceResp.arrayBuffer());
 
-    // Decode to raw RGBA pixels
-    const { data, width, height } = decodeImage(sourceBuffer);
-
-    // Normalize bounding box (0-1000 range → pixel coordinates with 8% padding)
-    const bx = Math.max(0, Math.min(999, Math.round(boundingBox.x)));
-    const by = Math.max(0, Math.min(999, Math.round(boundingBox.y)));
-    const bw = Math.max(1, Math.min(1000 - bx, Math.round(boundingBox.width)));
-    const bh = Math.max(1, Math.min(1000 - by, Math.round(boundingBox.height)));
-
-    const rawLeft = (bx / 1000) * width;
-    const rawTop = (by / 1000) * height;
-    const rawWidth = (bw / 1000) * width;
-    const rawHeight = (bh / 1000) * height;
+    // Normalize (EXIF rotate, sRGB, PNG) then extract crop region
+    const normalized = await normalizeImage(sourceBuffer);
+    const { width, height } = await sharp(normalized).metadata();
+    const box = normalizeBoundingBox(boundingBox);
+    const rawLeft = (box.x / 1000) * width!;
+    const rawTop = (box.y / 1000) * height!;
+    const rawWidth = (box.width / 1000) * width!;
+    const rawHeight = (box.height / 1000) * height!;
     const padding = Math.max(12, Math.round(Math.max(rawWidth, rawHeight) * 0.08));
-
     const left = Math.max(0, Math.floor(rawLeft - padding));
     const top = Math.max(0, Math.floor(rawTop - padding));
-    const right = Math.min(width, Math.ceil(rawLeft + rawWidth + padding));
-    const bottom = Math.min(height, Math.ceil(rawTop + rawHeight + padding));
+    const right = Math.min(width!, Math.ceil(rawLeft + rawWidth + padding));
+    const bottom = Math.min(height!, Math.ceil(rawTop + rawHeight + padding));
 
-    const cropW = Math.max(1, right - left);
-    const cropH = Math.max(1, bottom - top);
+    const cropBuffer = await sharp(normalized)
+      .extract({ left, top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) })
+      .png()
+      .toBuffer();
 
-    // Extract crop region
-    const cropData = Buffer.alloc(cropW * cropH * 4);
-    for (let y = 0; y < cropH; y++) {
-      for (let x = 0; x < cropW; x++) {
-        const srcIdx = ((top + y) * width + (left + x)) * 4;
-        const dstIdx = (y * cropW + x) * 4;
-        cropData[dstIdx] = data[srcIdx];
-        cropData[dstIdx + 1] = data[srcIdx + 1];
-        cropData[dstIdx + 2] = data[srcIdx + 2];
-        cropData[dstIdx + 3] = data[srcIdx + 3];
-      }
-    }
-
-    const cropBuffer = encodePNG(cropData, cropW, cropH);
-
-    // Upload crop to Convex storage
     const uploadUrl = await ctx.storage.generateUploadUrl();
     const uploadResp = await fetch(uploadUrl, {
       method: "POST",
@@ -130,8 +95,66 @@ export const cropDetectedItem = action({
   },
 });
 
+/** Frame a transparent garment on a 1024×1024 canvas at 88% occupancy. */
+async function frameTransparentGarment(bytes: Buffer, canvasSize = 1024, occupancy = 0.88): Promise<Buffer> {
+  const { data, info } = await sharp(bytes).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  let minX = info.width;
+  let minY = info.height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let index = 0, pixel = 0; index < data.length; index += 4, pixel += 1) {
+    if (data[index + 3] <= 8) continue;
+    const x = pixel % info.width;
+    const y = Math.floor(pixel / info.width);
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  }
+  if (maxX < minX || maxY < minY) throw new Error("Background removal did not leave a visible garment");
+
+  const trimmed = await sharp(data, { raw: info })
+    .extract({ left: minX, top: minY, width: maxX - minX + 1, height: maxY - minY + 1 })
+    .png()
+    .toBuffer();
+  const targetSize = Math.max(1, Math.round(canvasSize * Math.max(0.5, Math.min(0.96, occupancy))));
+  const resized = await sharp(trimmed)
+    .resize(targetSize, targetSize, { fit: "inside", withoutEnlargement: false })
+    .png()
+    .toBuffer({ resolveWithObject: true });
+  const left = Math.floor((canvasSize - resized.info.width) / 2);
+  const top = Math.floor((canvasSize - resized.info.height) / 2);
+  return sharp({
+    create: { width: canvasSize, height: canvasSize, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+  })
+    .composite([{ input: resized.data, left, top }])
+    .png()
+    .toBuffer();
+}
+
+/** Count chroma-key contamination left in the transparent garment. */
+async function verifyNoChromaSpill(bytes: Buffer, key: string) {
+  const target = [1, 3, 5].map((offset) => Number.parseInt(key.slice(offset, offset + 2), 16));
+  const keyedChannels = target.map((channel, index) => channel > 200 ? index : null).filter((index) => index !== null) as number[];
+  const neutralChannels = target.map((channel, index) => channel < 55 ? index : null).filter((index) => index !== null) as number[];
+  const { data } = await sharp(bytes).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  let contaminatedPixels = 0;
+  let maxSpill = 0;
+  for (let index = 0; index < data.length; index += 4) {
+    if (data[index + 3] === 0) continue;
+    const keyedLevel = keyedChannels.reduce((total, channel) => total + data[index + channel], 0) / keyedChannels.length;
+    const neutralLevel = neutralChannels.reduce((total, channel) => total + data[index + channel], 0) / neutralChannels.length;
+    const spill = Math.max(0, keyedLevel - neutralLevel);
+    maxSpill = Math.max(maxSpill, spill);
+    if (spill > 1.5) contaminatedPixels += 1;
+  }
+  return { contaminatedPixels, maxSpill };
+}
+
 /** Remove chroma key background from a garment image and frame it on 1024x1024 transparent canvas.
- *  Returns { garmentStorageId, failedStorageId } — the cleaned image and the raw (pre-cleanup) image. */
+ *  Port of original processChromaBackground + frameTransparentGarment + verifyNoChromaSpill.
+ *  Returns { garmentStorageId, failedStorageId, verification } — the cleaned image,
+ *  the raw (pre-cleanup) image, and the chroma-spill verification result. */
 export const processGarmentImage = action({
   args: {
     imageBase64: v.string(),
@@ -140,95 +163,81 @@ export const processGarmentImage = action({
   handler: async (ctx, { imageBase64, chromaKey }) => {
     const rawBuffer = Buffer.from(imageBase64, "base64");
 
-    // Decode garment PNG (always PNG from OpenAI)
-    const { data, width, height } = decodeImage(rawBuffer);
-
-    // Parse chroma key target color
-    const chromaTarget = [1, 3, 5].map((offset) =>
-      Number.parseInt(chromaKey.slice(offset, offset + 2), 16),
-    );
     const tolerance = 46;
     const feather = 80;
-
-    // Chroma key removal: pixel-level alpha manipulation
-    for (let idx = 0; idx < data.length; idx += 4) {
-      const distance = Math.sqrt(
-        ((data[idx] - chromaTarget[0]) ** 2) +
-        ((data[idx + 1] - chromaTarget[1]) ** 2) +
-        ((data[idx + 2] - chromaTarget[2]) ** 2),
-      );
-
-      if (distance <= tolerance) {
-        data[idx] = 0; data[idx + 1] = 0; data[idx + 2] = 0; data[idx + 3] = 0;
-      } else {
-        if (distance < tolerance + feather) {
-          data[idx + 3] = Math.round(data[idx + 3] * ((distance - tolerance) / feather));
-        }
-        if (data[idx + 3] <= 8) {
-          data[idx] = 0; data[idx + 1] = 0; data[idx + 2] = 0; data[idx + 3] = 0;
-        }
-      }
-    }
-
-    // Find bounding box of non-transparent pixels
-    let minX = width, minY = height, maxX = -1, maxY = -1;
-    for (let idx = 0, px = 0; idx < data.length; idx += 4, px += 1) {
-      if (data[idx + 3] <= 8) continue;
-      const x = px % width;
-      const y = Math.floor(px / width);
-      minX = Math.min(minX, x); minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
-    }
+    const target = [1, 3, 5].map((offset) => Number.parseInt(chromaKey.slice(offset, offset + 2), 16));
+    const keyedChannels = target.map((channel, index) => channel > 200 ? index : null).filter((index) => index !== null) as number[];
+    const neutralChannels = target.map((channel, index) => channel < 55 ? index : null).filter((index) => index !== null) as number[];
 
     let processedBuffer: Buffer;
+    let verification = { contaminatedPixels: 0, maxSpill: 0 };
 
-    if (maxX >= minX && maxY >= minY) {
-      // Trim to bounding box
-      const trimW = maxX - minX + 1;
-      const trimH = maxY - minY + 1;
-      const trimmed = Buffer.alloc(trimW * trimH * 4);
-      for (let y = 0; y < trimH; y++) {
-        for (let x = 0; x < trimW; x++) {
-          const srcIdx = ((minY + y) * width + (minX + x)) * 4;
-          const dstIdx = (y * trimW + x) * 4;
-          trimmed[dstIdx] = data[srcIdx];
-          trimmed[dstIdx + 1] = data[srcIdx + 1];
-          trimmed[dstIdx + 2] = data[srcIdx + 2];
-          trimmed[dstIdx + 3] = data[srcIdx + 3];
+    try {
+      const { data, info } = await sharp(rawBuffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+
+      // Pass 1: chroma key removal + keyed spill reduction
+      for (let index = 0; index < data.length; index += 4) {
+        const distance = Math.sqrt(
+          ((data[index] - target[0]) ** 2)
+          + ((data[index + 1] - target[1]) ** 2)
+          + ((data[index + 2] - target[2]) ** 2),
+        );
+        if (distance <= tolerance) {
+          data[index] = 0;
+          data[index + 1] = 0;
+          data[index + 2] = 0;
+          data[index + 3] = 0;
+        } else {
+          if (distance < tolerance + feather) {
+            data[index + 3] = Math.round(data[index + 3] * ((distance - tolerance) / feather));
+          }
+          const keyedLevel = keyedChannels.reduce((total, channel) => total + data[index + channel], 0) / keyedChannels.length;
+          const neutralLevel = neutralChannels.reduce((total, channel) => total + data[index + channel], 0) / neutralChannels.length;
+          const spill = Math.max(0, keyedLevel - neutralLevel);
+          if (spill > 0) {
+            const spillAlpha = Math.max(0, 1 - (Math.max(0, spill - 4) / 150));
+            data[index + 3] = Math.round(data[index + 3] * spillAlpha);
+            removeKeyedSpill(data, index, keyedChannels, neutralLevel);
+          }
+          if (data[index + 3] <= 8) {
+            data[index] = 0;
+            data[index + 1] = 0;
+            data[index + 2] = 0;
+            data[index + 3] = 0;
+          }
         }
       }
 
-      // Resize to fit within 88% of 1024px canvas
-      const targetSize = Math.max(1, Math.round(1024 * 0.88));
-      const scaleX = targetSize / trimW;
-      const scaleY = targetSize / trimH;
-      const scale = Math.min(scaleX, scaleY);
-      const resizedW = Math.max(1, Math.round(trimW * scale));
-      const resizedH = Math.max(1, Math.round(trimH * scale));
-
-      const resized = (trimW !== resizedW || trimH !== resizedH)
-        ? resizeRGBA(trimmed, trimW, trimH, resizedW, resizedH)
-        : trimmed;
-
-      // Frame on 1024×1024 transparent canvas
-      const canvasData = Buffer.alloc(1024 * 1024 * 4); // all zeros = transparent
-      const left = Math.floor((1024 - resizedW) / 2);
-      const top_ = Math.floor((1024 - resizedH) / 2);
-
-      for (let y = 0; y < resizedH; y++) {
-        for (let x = 0; x < resizedW; x++) {
-          const srcIdx = (y * resizedW + x) * 4;
-          const dstIdx = ((top_ + y) * 1024 + (left + x)) * 4;
-          canvasData[dstIdx] = resized[srcIdx];
-          canvasData[dstIdx + 1] = resized[srcIdx + 1];
-          canvasData[dstIdx + 2] = resized[srcIdx + 2];
-          canvasData[dstIdx + 3] = resized[srcIdx + 3];
+      // Pass 2: residual spill sweep
+      for (let index = 0; index < data.length; index += 4) {
+        if (data[index + 3] === 0) continue;
+        const keyedLevel = keyedChannels.reduce((total, channel) => total + data[index + channel], 0) / keyedChannels.length;
+        const neutralLevel = neutralChannels.reduce((total, channel) => total + data[index + channel], 0) / neutralChannels.length;
+        const residualSpill = Math.max(0, keyedLevel - neutralLevel);
+        if (residualSpill > 0) {
+          removeKeyedSpill(data, index, keyedChannels, neutralLevel);
         }
       }
 
-      processedBuffer = encodePNG(canvasData, 1024, 1024);
-    } else {
-      // Background removal left nothing visible — use raw output as fallback
+      const keyedOutput = await sharp(data, { raw: info }).png().toBuffer();
+      const framedOutput = await frameTransparentGarment(keyedOutput);
+
+      // Pass 3: post-frame residual spill sweep
+      const { data: framedData, info: framedInfo } = await sharp(framedOutput).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      for (let index = 0; index < framedData.length; index += 4) {
+        if (framedData[index + 3] === 0) continue;
+        const keyedLevel = keyedChannels.reduce((total, channel) => total + framedData[index + channel], 0) / keyedChannels.length;
+        const neutralLevel = neutralChannels.reduce((total, channel) => total + framedData[index + channel], 0) / neutralChannels.length;
+        const residualSpill = Math.max(0, keyedLevel - neutralLevel);
+        if (residualSpill <= 0) continue;
+        removeKeyedSpill(framedData, index, keyedChannels, neutralLevel);
+      }
+      processedBuffer = await sharp(framedData, { raw: framedInfo }).png().toBuffer();
+
+      verification = await verifyNoChromaSpill(processedBuffer, chromaKey);
+      console.log(`Garment cleanup verification: ${verification.contaminatedPixels} contaminated pixels, max spill ${verification.maxSpill.toFixed(2)}`);
+    } catch (chromaError) {
+      console.warn("Chroma key removal failed, using raw garment:", chromaError);
       processedBuffer = rawBuffer;
     }
 
@@ -250,6 +259,6 @@ export const processGarmentImage = action({
     });
     const { storageId: garmentStorageId } = await garmentResp.json();
 
-    return { garmentStorageId, failedStorageId };
+    return { garmentStorageId, failedStorageId, verification };
   },
 });
