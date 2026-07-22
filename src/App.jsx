@@ -5,6 +5,7 @@ import { useMutation } from "convex/react";
 import { api } from "../convex/_generated/api";
 import { WardrobeImportFlow } from "./import-flow.jsx";
 import { AuthForm } from "./AuthForm.jsx";
+import { LandingPage } from "./LandingPage.jsx";
 import { OptimizedImage } from "./OptimizedImage.jsx";
 import { useConvexWardrobe, useConvexOutfits, useConvexTryon, useConvexCredits } from "./hooks/useConvex.js";
 
@@ -1377,7 +1378,7 @@ export function App() {
   const isOutfitsView = activeType === "outfits";
 
   // Auth gate: all hooks above have run, safe to short-circuit the JSX.
-  if (!isAuthenticated) return <AuthForm />;
+  if (!isAuthenticated) return <LandingPage />;
   if (provisionError) {
     return (
       <div className="auth-screen">
