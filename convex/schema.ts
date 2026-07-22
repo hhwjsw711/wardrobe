@@ -78,8 +78,10 @@ export default defineSchema({
     plan: Plan,                          // "free" | "pro" | "max"
     creditBalance: v.number(),           // current credits, kept in sync with creditLedger
     stripeCustomerId: v.optional(v.string()),
+    mcpApiKey: v.optional(v.string()),  // API key for MCP server access
   })
-    .index("by_user", ["userId"]),
+    .index("by_user", ["userId"])
+    .index("by_mcp_api_key", ["mcpApiKey"]),
 
   // 2. Wardrobe Items
   wardrobeItems: defineTable({

@@ -1,19 +1,25 @@
 import { useCallback, useState } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "../convex/_generated/api";
-import { ArrowLeft, FloppyDisk, User, WarningCircle } from "@phosphor-icons/react";
+import { ArrowLeft, Copy, FloppyDisk, Key, Trash, User, WarningCircle } from "@phosphor-icons/react";
 
 /**
  * Profile & Account page.
- * Shows user info, wardrobe stats, style insights, and account actions.
+ * Shows user info, wardrobe stats, style insights, MCP API key, and account actions.
  * Full-screen overlay on top of the main wardrobe view.
  */
 export function ProfilePage({ onClose }) {
   const profile = useQuery(api.profile.getProfile);
   const updateProfile = useMutation(api.profile.updateProfile);
+  const mcpApiKey = useQuery(api.profile.getMcpApiKey);
+  const generateMcpApiKey = useMutation(api.profile.generateMcpApiKey);
+  const revokeMcpApiKey = useMutation(api.profile.revokeMcpApiKey);
+
   const [editingName, setEditingName] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [mcpGenerating, setMcpGenerating] = useState(false);
+  const [mcpCopied, setMcpCopied] = useState(false);
 
   const handleSaveName = useCallback(async () => {
     if (editingName === null) return;
@@ -30,6 +36,38 @@ export function ProfilePage({ onClose }) {
       setSaving(false);
     }
   }, [editingName, updateProfile]);
+
+  const handleCopyKey = useCallback(async () => {
+    if (!mcpApiKey) return;
+    try {
+      await navigator.clipboard.writeText(mcpApiKey);
+      setMcpCopied(true);
+      setTimeout(() => setMcpCopied(false), 2000);
+    } catch {}
+  }, [mcpApiKey]);
+
+  const handleGenerateKey = useCallback(async () => {
+    setMcpGenerating(true);
+    try {
+      await generateMcpApiKey();
+    } catch (err) {
+      console.error("Failed to generate API key:", err);
+    } finally {
+      setMcpGenerating(false);
+    }
+  }, [generateMcpApiKey]);
+
+  const handleRevokeKey = useCallback(async () => {
+    if (!window.confirm("Revoke your MCP API key? Any integrations using it will stop working.")) return;
+    setMcpGenerating(true);
+    try {
+      await revokeMcpApiKey();
+    } catch (err) {
+      console.error("Failed to revoke API key:", err);
+    } finally {
+      setMcpGenerating(false);
+    }
+  }, [revokeMcpApiKey]);
 
   if (profile === undefined) {
     return (
@@ -88,6 +126,48 @@ export function ProfilePage({ onClose }) {
             <label>Plan</label>
             <span className="profile-value profile-plan-badge">{profile.plan}</span>
           </div>
+        </section>
+
+        {/* MCP API Key Section */}
+        <section className="profile-section">
+          <h2 className="profile-section-heading">
+            <Key size={16} /> MCP API Key
+          </h2>
+          <p className="profile-section-desc">
+            Use this key to connect AI assistants (Claude, ChatGPT) to your wardrobe via the MCP server.
+          </p>
+          {mcpApiKey ? (
+            <>
+              <div className="profile-api-key-row">
+                <code className="profile-api-key">{mcpApiKey}</code>
+                <button
+                  className="profile-copy-btn"
+                  onClick={handleCopyKey}
+                  title="Copy key"
+                >
+                  <Copy size={16} />
+                  {mcpCopied ? "Copied!" : "Copy"}
+                </button>
+              </div>
+              <div className="profile-api-key-actions">
+                <button
+                  className="profile-api-revoke-btn"
+                  onClick={handleRevokeKey}
+                  disabled={mcpGenerating}
+                >
+                  <Trash size={14} /> Revoke Key
+                </button>
+              </div>
+            </>
+          ) : (
+            <button
+              className="profile-api-generate-btn"
+              onClick={handleGenerateKey}
+              disabled={mcpGenerating}
+            >
+              <Key size={16} /> {mcpGenerating ? "Generating..." : "Generate API Key"}
+            </button>
+          )}
         </section>
 
         {/* Wardrobe Stats */}

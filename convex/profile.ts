@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
-import { requireAuthedUserId, ensureUserFields } from "./helpers";
+import { requireAuthedUserId, ensureUserFields, getOrCreateProfile } from "./helpers";
 
 // ─── Queries ────────────────────────────────────────────────────
 
@@ -94,5 +94,44 @@ export const updateProfile = mutation({
     if (Object.keys(patches).length > 0) {
       await ctx.db.patch(userId, patches);
     }
+  },
+});
+
+// ─── MCP API Key ──────────────────────────────────────────────
+
+/** Get the current MCP API key (or null if not generated). */
+export const getMcpApiKey = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireAuthedUserId(ctx);
+    const profile = await ctx.db
+      .query("userProfiles")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first();
+    return profile?.mcpApiKey ?? null;
+  },
+});
+
+/** Generate a new MCP API key. Replaces any existing key. */
+export const generateMcpApiKey = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireAuthedUserId(ctx);
+    const profile = await getOrCreateProfile(ctx, userId);
+    // Generate a random API key: wrd_<uuid>
+    const apiKey = `wrd_${crypto.randomUUID().replace(/-/g, "")}`;
+    await ctx.db.patch(profile._id, { mcpApiKey: apiKey });
+    return apiKey;
+  },
+});
+
+/** Revoke the MCP API key (sets to null). */
+export const revokeMcpApiKey = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await requireAuthedUserId(ctx);
+    const profile = await getOrCreateProfile(ctx, userId);
+    await ctx.db.patch(profile._id, { mcpApiKey: undefined });
+    return { revoked: true };
   },
 });

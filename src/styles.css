@@ -2207,6 +2207,87 @@ button { font: inherit; }
   font-style: italic;
 }
 
+.profile-section-desc {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+
+.profile-api-key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+
+.profile-api-key {
+  flex: 1;
+  font-family: monospace;
+  font-size: 13px;
+  word-break: break-all;
+  color: var(--ink);
+  user-select: all;
+}
+
+.profile-copy-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--accent);
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.profile-copy-btn:hover { background: var(--paper); }
+
+.profile-api-key-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.profile-api-revoke-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #a03030;
+  transition: background 0.15s;
+}
+.profile-api-revoke-btn:hover { background: var(--paper); }
+.profile-api-revoke-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.profile-api-generate-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 20px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: opacity 0.15s;
+}
+.profile-api-generate-btn:hover { opacity: 0.9; }
+.profile-api-generate-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
 @media (max-width: 640px) {
   .profile-content { padding: 16px; }
   .profile-stats { gap: 12px; }
