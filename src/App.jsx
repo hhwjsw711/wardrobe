@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowSquareOut, ArrowsClockwise, Check, CoatHanger, MagnifyingGlass, Plus, SpinnerGap, Trash, UserFocus, User, X } from "@phosphor-icons/react";
+import { ArrowSquareOut, ArrowsClockwise, Check, CoatHanger, Calendar, MagnifyingGlass, Plus, SpinnerGap, Trash, UserFocus, User, X } from "@phosphor-icons/react";
 import { useConvexAuth, useAuthActions } from "@convex-dev/auth/react";
 import { useMutation } from "convex/react";
 import { api } from "../convex/_generated/api";
@@ -7,6 +7,7 @@ import { WardrobeImportFlow } from "./import-flow.jsx";
 import { AuthForm } from "./AuthForm.jsx";
 import { LandingPage } from "./LandingPage.jsx";
 import { ProfilePage } from "./ProfilePage.jsx";
+import { PlannerPage } from "./PlannerPage.jsx";
 import { OptimizedImage } from "./OptimizedImage.jsx";
 import { useConvexWardrobe, useConvexOutfits, useConvexTryon, useConvexCredits } from "./hooks/useConvex.js";
 
@@ -1240,6 +1241,7 @@ export function App() {
   const [selectedOutfitId, setSelectedOutfitId] = useState(null);
   const [showCreator, setShowCreator] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [showPlanner, setShowPlanner] = useState(false);
 
   // Stable callbacks for ItemViewer/OutfitViewer — prevents focus-stealing
   // and effect re-runs caused by inline arrow functions on every render.
@@ -1418,6 +1420,9 @@ export function App() {
               {!creditsHook.loading && creditsHook.balance.balance > 0 && (
                 <p className="credit-balance">{creditsHook.balance.balance} credits</p>
               )}
+              <button className="profile-button" type="button" onClick={() => setShowPlanner(true)} aria-label="Planner">
+                <Calendar size={14} /> Planner
+              </button>
               <button className="profile-button" type="button" onClick={() => setShowProfile(true)} aria-label="Profile">
                 <User size={14} /> Profile
               </button>
@@ -1520,6 +1525,7 @@ export function App() {
       )}
 
       {showProfile && <ProfilePage onClose={() => setShowProfile(false)} />}
+      {showPlanner && <PlannerPage onClose={() => setShowPlanner(false)} outfits={outfits} />}
     </div>
   );
 }

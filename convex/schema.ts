@@ -147,6 +147,7 @@ export default defineSchema({
     date: v.string(),                    // "YYYY-MM-DD"
     outfitId: v.optional(v.id("outfits")),
     note: v.optional(v.string()),
+    worn: v.optional(v.boolean()),        // true = marked as actually worn that day
   })
     .index("by_user", ["userId"])
     .index("by_user_date", ["userId", "date"]),

@@ -100,3 +100,17 @@ export const removePlannerEntry = mutation({
     await ctx.db.delete(id);
   },
 });
+
+/** Mark a planner entry as worn (or un-worn). */
+export const markWorn = mutation({
+  args: {
+    id: v.id("plannerEntries"),
+    worn: v.boolean(),
+  },
+  handler: async (ctx, { id, worn }) => {
+    const userId = await requireAuthedUserId(ctx);
+    const entry = await ctx.db.get(id);
+    if (!entry || entry.userId !== userId) throw new Error("Not found");
+    await ctx.db.patch(id, { worn });
+  },
+});
