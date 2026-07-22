@@ -4,8 +4,22 @@ dist/
 .env
 .env.*
 !.env.example
+!.env.production
 *.log
 data/
 .temp/
 *.docx
 convex/_generated/
+
+# Agent/tool config (not part of the project)
+.agents/
+.claude/
+AGENTS.md
+CLAUDE.md
+skills-lock.json
+
+# Test screenshots in project root
+image-*.jpg
+outfit-viewer-*.png
+outfits-view-*.png
+sidebar-buttons.png
