@@ -179,6 +179,20 @@ export const startImport = mutation({
   },
   handler: async (ctx, { sourceStorageId, autoProcess }) => {
     const userId = await requireAuthedUserId(ctx);
+
+    // Rate limit: max 10 pending/processing jobs per user
+    const pending = await ctx.db
+      .query("importJobs")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    const activeCount = pending.filter((j) => {
+      const s = j.kind === "upload" ? j.analysis?.status : j.stages?.crop?.status;
+      return s !== "approved" && s !== "rejected";
+    }).length;
+    if (activeCount >= 10) {
+      throw new Error("Too many active imports. Wait for some to finish before adding more.");
+    }
+
     const jobId = await ctx.db.insert("importJobs", {
       userId,
       kind: "upload",

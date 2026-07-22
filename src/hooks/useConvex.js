@@ -9,6 +9,7 @@
  */
 import { useQuery, useMutation, useAction } from "convex/react";
 import { useMemo, useCallback } from "react";
+import { useConvexAuth } from "@convex-dev/auth/react";
 import { api } from "../../convex/_generated/api";
 
 // Module-level constants so loading-state placeholders keep a stable
@@ -42,10 +43,13 @@ const EMPTY_MODEL_REFS = EMPTY_ARRAY;
  * on every entry of `palette` so the ColorControl never renders an
  * unusable swatch.
  */
+const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
+
 function sanitizeColor(value) {
   if (typeof value !== "string") return null;
   const v = value.trim().toLowerCase();
   if (!v || v === "null" || v === "undefined" || v === "none") return null;
+  if (!HEX_COLOR_RE.test(v)) return null;
   return v;
 }
 
@@ -515,12 +519,13 @@ export function useConvexProfile() {
 
 // ─── Auth ────────────────────────────────────────────────────────
 
-export function useConvexAuth() {
-  const user = useQuery(api.helpers.currentUser);
+export function useConvexUserProfile() {
+  const { isAuthenticated } = useConvexAuth();
+  const user = useQuery(api.helpers.currentUser, isAuthenticated ? {} : "skip");
 
   return {
     user,
-    isAuthenticated: user !== null,
-    loading: user === undefined,
+    isAuthenticated,
+    loading: !isAuthenticated || user === undefined,
   };
 }

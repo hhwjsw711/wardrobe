@@ -14,10 +14,13 @@ import { getAuthUserId } from "@convex-dev/auth/server";
  * `backgroundColor: "null"` console warnings. This helper shrinks those
  * sentinel strings back to real null *before* the value is persisted.
  */
+const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
+
 export function sanitizeColor(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const v = value.trim().toLowerCase();
   if (!v || v === "null" || v === "undefined" || v === "none") return null;
+  if (!HEX_COLOR_RE.test(v)) return null;
   return v;
 }
 

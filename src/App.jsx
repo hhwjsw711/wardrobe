@@ -429,6 +429,8 @@ function ItemViewer({ item, onClose, onSave, onDelete, onIdentifyProduct, onGene
     setActionError("");
     try {
       const saved = await onSave({ ...item, ...draft, name: draft.name.trim(), tags: draft.tags.map((tag) => tag.trim()).filter(Boolean) });
+      // Reset draft to server-normalized values so isDirty becomes false
+      // immediately, before the realtime subscription delivers the update.
       setDraft({ name: saved.name || "", part: saved.part, color: saved.color || "#9a9286", secondaryColor: saved.secondaryColor || null, tags: [...(saved.tags || [])] });
       setSampling(null);
       setSampleStatus("Saved to your wardrobe.");
@@ -1229,7 +1231,15 @@ export function App() {
         secondaryColor: updatedItem.secondaryColor,
         tags: updatedItem.tags,
       });
-      return updatedItem; // Return for ItemViewer draft reset
+      // Return normalized input for draft reset — matches what the server
+      // will store (lowercased hex, trimmed name, lowercased tags).
+      return {
+        ...updatedItem,
+        name: updatedItem.name?.trim(),
+        color: updatedItem.color?.toLowerCase(),
+        secondaryColor: updatedItem.secondaryColor?.toLowerCase() || null,
+        tags: (updatedItem.tags || []).map((t) => t.trim().toLowerCase()).filter(Boolean),
+      };
     } catch (requestError) {
       throw new Error(requestError.message || "Could not save this piece.");
     }

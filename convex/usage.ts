@@ -8,10 +8,11 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 // (e.g. gpt-image-2-2026-01-01) resolve to "gpt-image-2".
 //
 // NOTE: These rates come from klapp101/wardrobe PR #5 (cost_observability).
-// Verify against your actual OpenAI bill and adjust as needed — image
-// models in particular may bill per-image rather than per-token, in which
-// case the `cost` field will be an over-estimate for image endpoints and
-// should be re-derived from `gpt-image-2` per-image list prices instead.
+// VERIFY AGAINST YOUR ACTUAL OPENAI BILL AND ADJUST AS NEEDED.
+// Image models bill per-image, not per-token — the `cost` field computed
+// below is an ESTIMATE based on token rates and will not match the actual
+// per-image charge. Replace with per-image pricing when known.
+// Dev test showed: product-match $0.00315, modeled photo $0.24573.
 const PRICING: Record<string, { input: number; imageInput?: number; output: number }> = {
   "gpt-image-2": { input: 5, imageInput: 10, output: 40 },
   "gpt-5.4-mini": { input: 0.25, imageInput: 0.25, output: 2 },
@@ -217,7 +218,8 @@ export const getMyUsage = query({
     const myLogs = await ctx.db
       .query("usageLogs")
       .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect();
+      .order("desc")
+      .take(2000);
 
     const byLabel: Record<string, { calls: number; cost: number }> = {};
     for (const e of myLogs) {

@@ -224,13 +224,32 @@ export const updateWardrobeItem = mutation({
   },
 });
 
-/** Delete a wardrobe item and its stored images. */
+/** Delete a wardrobe item, its stored images, and remove it from any outfits. */
 export const deleteWardrobeItem = mutation({
   args: { id: v.id("wardrobeItems") },
   handler: async (ctx, { id }) => {
     const userId = await requireAuthedUserId(ctx);
     const item = await ctx.db.get(id);
     if (!item || item.userId !== userId) throw new Error("Not found");
+
+    // Remove item from any outfits that reference it
+    const outfits = await ctx.db
+      .query("outfits")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    for (const outfit of outfits) {
+      if (outfit.garmentIds.includes(id)) {
+        const updatedIds = outfit.garmentIds.filter((gid) => gid !== id);
+        if (updatedIds.length === 0) {
+          // Outfit has no garments left — delete it
+          if (outfit.imageStorageId) await ctx.storage.delete(outfit.imageStorageId);
+          await ctx.db.delete(outfit._id);
+        } else {
+          await ctx.db.patch(outfit._id, { garmentIds: updatedIds });
+        }
+      }
+    }
+
     // Clean up images from storage
     if (item.garmentStorageId) await ctx.storage.delete(item.garmentStorageId);
     if (item.modeledStorageId) await ctx.storage.delete(item.modeledStorageId);
