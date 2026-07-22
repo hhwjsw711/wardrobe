@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowSquareOut, ArrowsClockwise, Check, CoatHanger, MagnifyingGlass, Plus, SpinnerGap, Trash, UserFocus, X } from "@phosphor-icons/react";
+import { ArrowSquareOut, ArrowsClockwise, Check, CoatHanger, MagnifyingGlass, Plus, SpinnerGap, Trash, UserFocus, User, X } from "@phosphor-icons/react";
 import { useConvexAuth, useAuthActions } from "@convex-dev/auth/react";
 import { useMutation } from "convex/react";
 import { api } from "../convex/_generated/api";
 import { WardrobeImportFlow } from "./import-flow.jsx";
 import { AuthForm } from "./AuthForm.jsx";
 import { LandingPage } from "./LandingPage.jsx";
+import { ProfilePage } from "./ProfilePage.jsx";
 import { OptimizedImage } from "./OptimizedImage.jsx";
 import { useConvexWardrobe, useConvexOutfits, useConvexTryon, useConvexCredits } from "./hooks/useConvex.js";
 
@@ -1238,6 +1239,7 @@ export function App() {
   const [error, setError] = useState("");
   const [selectedOutfitId, setSelectedOutfitId] = useState(null);
   const [showCreator, setShowCreator] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
 
   // Stable callbacks for ItemViewer/OutfitViewer — prevents focus-stealing
   // and effect re-runs caused by inline arrow functions on every render.
@@ -1416,6 +1418,9 @@ export function App() {
               {!creditsHook.loading && creditsHook.balance.balance > 0 && (
                 <p className="credit-balance">{creditsHook.balance.balance} credits</p>
               )}
+              <button className="profile-button" type="button" onClick={() => setShowProfile(true)} aria-label="Profile">
+                <User size={14} /> Profile
+              </button>
               <button className="sign-out-button" type="button" onClick={() => signOut()} aria-label="Sign out">Sign out</button>
             </div>
           </div>
@@ -1513,6 +1518,8 @@ export function App() {
       ) : (
         <WardrobeImportFlow />
       )}
+
+      {showProfile && <ProfilePage onClose={() => setShowProfile(false)} />}
     </div>
   );
 }
