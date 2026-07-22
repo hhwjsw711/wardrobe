@@ -1317,10 +1317,9 @@ export function App() {
   };
 
   const generateModeled = async (id) => {
-    try {
-      await wardrobe.generateModeled(id);
-    } catch (requestError) {
-      throw new Error(requestError.message || "Could not generate modeled photo.");
+    const result = await wardrobe.generateModeled(id);
+    if (result?.success === false) {
+      throw new Error(result.error || "Could not generate modeled photo.");
     }
   };
 

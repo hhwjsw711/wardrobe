@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { query, mutation, action, internalQuery, internalMutation } from "./_generated/server";
 import { requireAuthedUserId, ensureUserFields, sanitizeColor } from "./helpers";
 import { safeRecord } from "./usage";
@@ -523,18 +523,23 @@ export const generateModeledForItem = action({
     regeneratePrompt: v.optional(v.string()),
   },
   handler: async (ctx, { itemId, regeneratePrompt }) => {
-    const userId = await getAuthUserId(ctx);
+    let userId: any;
+    let creditsDeducted = false;
+    try {
+    userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("Unauthorized");
 
     const item = await ctx.runQuery("wardrobe:getWardrobeItemById", { itemId });
-    if (!item || item.userId !== userId) throw new Error("Not found");
-    if (!item.garmentStorageId) throw new Error("Garment image not found");
+    if (!item) throw new Error("Item not found");
+    if (item.userId !== userId) throw new Error(`Item user ${item.userId} != auth user ${userId}`);
+    if (!item.garmentStorageId) throw new Error("Garment image not found on item");
 
     // A-07: Deduct modeled credits before making the OpenAI call
     await ctx.runMutation("credits:deductModeledInternal", { userId });
+    creditsDeducted = true;
 
     const garmentUrl = await ctx.storage.getUrl(item.garmentStorageId);
-    if (!garmentUrl) throw new Error("Garment image not found");
+    if (!garmentUrl) throw new Error("Garment image URL not found");
 
     const modelRefIds = await ctx.runQuery("import:getModelReferencesForUser", { userId });
     if (!modelRefIds.length) throw new Error("Add reference photos first");
@@ -593,5 +598,19 @@ export const generateModeledForItem = action({
     await ctx.runMutation("wardrobe:patchModeledImage", { itemId, modeledStorageId });
 
     return { success: true };
+    } catch (err: any) {
+      // Log full error to Convex logs for debugging
+      console.error("[Modeled] Full error:", err?.message, err?.stack, JSON.stringify(err?.data || {}));
+      // Refund credits on failure if they were deducted
+      if (creditsDeducted && userId) {
+        try {
+          await ctx.runMutation("credits:refundCredits", { userId, amount: 10, reason: `Modeled photo failed: ${err?.message || String(err)}` });
+        } catch (refundErr) {
+          console.error("Failed to refund credits:", refundErr);
+        }
+      }
+      // Return error as data (not throw) so client receives the actual message
+      return { success: false, error: `[Modeled] ${err?.message || String(err)}` };
+    }
   },
 });

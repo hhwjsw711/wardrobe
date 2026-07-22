@@ -478,6 +478,7 @@ export const analyzeUpload = internalAction({
       status: "processing",
     });
 
+    try {
     const imageUrl = await ctx.storage.getUrl(sourceStorageId);
     if (!imageUrl) throw new Error("Source image not found");
 
@@ -632,6 +633,14 @@ export const analyzeUpload = internalAction({
     });
 
     return { detectedItems: parsed.items.length, itemJobIds };
+    } catch (err: any) {
+      console.error(`analyzeUpload crashed for ${jobId}:`, err);
+      await ctx.runMutation("import:updateUploadJobAnalysis", {
+        jobId,
+        status: "failed",
+        error: `Unexpected error: ${err?.message || String(err)}`.substring(0, 300),
+      });
+    }
   },
 });
 
@@ -663,6 +672,7 @@ export const generateGarment = internalAction({
     regeneratePrompt: v.optional(v.string()),
   },
   handler: async (ctx, { jobId, sourceStorageId, regeneratePrompt }) => {
+    try {
     const job = await ctx.runQuery("import:getJobById", { jobId });
     if (!job) throw new Error("Import job not found");
 
@@ -798,6 +808,15 @@ Critical: Use no ${chromaKey} anywhere in the garment. Produce exactly one compl
         chromaKey,
       });
     }
+    } catch (err: any) {
+      console.error(`generateGarment crashed for ${jobId}:`, err);
+      await ctx.runMutation("import:updateStageStatus", {
+        jobId,
+        stage: "garment",
+        status: "failed",
+        error: `Unexpected error: ${err?.message || String(err)}`.substring(0, 300),
+      });
+    }
   },
 });
 
@@ -809,6 +828,7 @@ export const generateModeled = internalAction({
     regeneratePrompt: v.optional(v.string()),
   },
   handler: async (ctx, { jobId, garmentStorageId, regeneratePrompt }) => {
+    try {
     const job = await ctx.runQuery("import:getJobById", { jobId });
     if (!job) throw new Error("Import job not found");
 
@@ -904,6 +924,15 @@ export const generateModeled = internalAction({
         stage: "modeled",
         status: "review",
         storageId: modeledStorageId,
+      });
+    }
+    } catch (err: any) {
+      console.error(`generateModeled crashed for ${jobId}:`, err);
+      await ctx.runMutation("import:updateStageStatus", {
+        jobId,
+        stage: "modeled",
+        status: "failed",
+        error: `Unexpected error: ${err?.message || String(err)}`.substring(0, 300),
       });
     }
   },

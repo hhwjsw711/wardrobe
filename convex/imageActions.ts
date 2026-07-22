@@ -1,7 +1,7 @@
 "use node";
 
 import { v } from "convex/values";
-import { action } from "./_generated/server";
+import { action, internalAction } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import sharp from "sharp";
 
@@ -49,7 +49,7 @@ function removeKeyedSpill(data: Buffer, index: number, keyedChannels: number[], 
 
 /** Crop a detected clothing item from the source image using bounding box coordinates.
  *  Returns the storageId of the uploaded crop image. */
-export const cropDetectedItem = action({
+export const cropDetectedItem = internalAction({
   args: {
     sourceStorageId: v.id("_storage"),
     boundingBox: v.object({
@@ -60,9 +60,6 @@ export const cropDetectedItem = action({
     }),
   },
   handler: async (ctx, { sourceStorageId, boundingBox }) => {
-    const userId = await getAuthUserId(ctx);
-    if (!userId) throw new Error("Unauthorized");
-
     const sourceUrl = await ctx.storage.getUrl(sourceStorageId);
     if (!sourceUrl) throw new Error("Source image not found");
 
@@ -240,15 +237,12 @@ async function processChromaBackground(
  *  Returns { garmentStorageId, failedStorageId, verification, chromaSuccess } — the cleaned image,
  *  the raw (pre-cleanup) image, the chroma-spill verification result, and whether chroma
  *  removal succeeded (false = processing threw, garment image is raw/unusable). */
-export const processGarmentImage = action({
+export const processGarmentImage = internalAction({
   args: {
     imageBase64: v.string(),
     chromaKey: v.string(),
   },
   handler: async (ctx, { imageBase64, chromaKey }) => {
-    const userId = await getAuthUserId(ctx);
-    if (!userId) throw new Error("Unauthorized");
-
     const rawBuffer = Buffer.from(imageBase64, "base64");
 
     let processedBuffer: Buffer;
