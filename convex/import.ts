@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { mutation, action, query, internalQuery, internalMutation } from "./_generated/server";
 import { requireAuthedUserId, sanitizeColor } from "./helpers";
+import { safeRecord } from "./usage";
 
 // ─── Import Pipeline ────────────────────────────────────────────
 //
@@ -512,6 +513,7 @@ export const analyzeUpload = action({
     }
 
     const data = await response.json();
+    await safeRecord(ctx, { userId, endpoint: "responses", label: "analyze", model: visionModel, usage: data.usage, jobId });
     let parsed;
     try {
       parsed = JSON.parse(data.output[0].content[0].text);
@@ -699,6 +701,7 @@ Critical: Use no ${chromaKey} anywhere in the garment. Produce exactly one compl
     }
 
     const result = await response.json();
+    await safeRecord(ctx, { userId: job.userId, endpoint: "images/edits", label: "garment", model: imageModel, usage: result.usage, jobId });
     const imageBase64 = result.data?.[0]?.b64_json;
     if (!imageBase64) {
       await ctx.runMutation("import:updateStageStatus", {
@@ -804,6 +807,7 @@ export const generateModeled = action({
     }
 
     const result = await response.json();
+    await safeRecord(ctx, { userId: job.userId, endpoint: "images/edits", label: "modeled", model: imageModel, usage: result.usage, jobId });
     const imageBase64 = result.data?.[0]?.b64_json;
     if (!imageBase64) {
       await ctx.runMutation("import:updateStageStatus", {
@@ -979,6 +983,7 @@ export const runProductMatch = action({
     }
 
     const data = await response.json();
+    await safeRecord(ctx, { userId: job.userId, endpoint: "responses", label: "product-match", model, usage: data.usage, jobId });
 
     // The Responses API with the web_search tool returns output items in order:
     // web_search_call(s) first, then the final assistant message. Find the

@@ -218,4 +218,26 @@ export default defineSchema({
   })
     .index("by_user", ["userId"])
     .index("by_user_reason", ["userId", "reason"]),
+
+  // 9. Usage Logs (cost observability — one row per OpenAI API call)
+  // Inspired by klapp101/wardrobe PR #5 (cost_observability). Adapted to Convex:
+  // file-append log → DB table; admin endpoint → admin-gated query.
+  usageLogs: defineTable({
+    userId: v.optional(v.id("users")),
+    at: v.number(),                              // ms timestamp (Date.now())
+    endpoint: v.string(),                        // "images/edits" | "responses"
+    label: v.string(),                           // "analyze" | "garment" | "modeled" | "tryon" | "outfit" | "outfit-analyze" | "product-match"
+    model: v.string(),
+    inputTokens: v.number(),                     // total input tokens (text + image)
+    textInputTokens: v.number(),                 // text-only input tokens
+    imageInputTokens: v.number(),                // image input tokens (billed at separate rate)
+    outputTokens: v.number(),
+    cost: v.optional(v.number()),                // USD; omitted when model pricing unknown (defensive)
+    jobId: v.optional(v.string()),               // import job ID if applicable
+    itemId: v.optional(v.id("wardrobeItems")),   // wardrobe item ID if applicable
+  })
+    .index("by_user", ["userId"])
+    .index("by_label", ["label"])
+    .index("by_model", ["model"])
+    .index("by_at", ["at"]),
 });

@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { query, mutation, action, internalQuery, internalMutation } from "./_generated/server";
 import { requireAuthedUserId, ensureUserFields, sanitizeColor } from "./helpers";
+import { safeRecord } from "./usage";
 import { getAuthUserId } from "@convex-dev/auth/server";
 
 // ─── Internal helpers (for actions, which lack ctx.db) ───────────
@@ -311,6 +312,7 @@ export const analyzePhoto = action({
     }
 
     const data = await response.json();
+    await safeRecord(ctx, { userId, endpoint: "responses", label: "analyze", model, usage: data.usage });
     const parsed = JSON.parse(data.output[0].content[0].text);
     // Defensively strip sentinel-string colors ("null", "none", "") that
     // the model occasionally emits before returning to the caller.
@@ -396,6 +398,7 @@ export const productMatch = action({
     }
 
     const data = await response.json();
+    await safeRecord(ctx, { userId, endpoint: "responses", label: "product-match", model, usage: data.usage, itemId });
 
     // The Responses API with the web_search tool returns output items in order:
     // web_search_call(s) first, then the final assistant message. Find the
@@ -542,6 +545,7 @@ export const generateModeledForItem = action({
     }
 
     const result = await response.json();
+    await safeRecord(ctx, { userId, endpoint: "images/edits", label: "modeled", model: imageModel, usage: result.usage, itemId });
     const imageBase64 = result.data?.[0]?.b64_json;
     if (!imageBase64) throw new Error("No image data in response");
 

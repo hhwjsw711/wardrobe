@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import { query, mutation, action, internalQuery, internalMutation } from "./_generated/server";
 import { requireAuthedUserId } from "./helpers";
 import { deductTryonImpl } from "./credits";
+import { safeRecord } from "./usage";
 
 // ─── Error helpers ─────────────────────────────────────────────────
 
@@ -233,6 +234,7 @@ export const processTryon = action({
       }
 
       const result = await response.json();
+      await safeRecord(ctx, { userId: job.userId, endpoint: "images/edits", label: "tryon", model, usage: result.usage });
       const imageBase64 = result.data?.[0]?.b64_json;
       if (!imageBase64) throw new Error("No image returned from OpenAI");
 

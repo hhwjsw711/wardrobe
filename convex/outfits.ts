@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { query, mutation, action, internalAction, internalQuery, internalMutation } from "./_generated/server";
 import { requireAuthedUserId } from "./helpers";
+import { safeRecord } from "./usage";
 
 // ─── Internal helpers (for actions, which lack ctx.db) ───────────
 
@@ -310,6 +311,7 @@ export const generateOutfitImage = action({
       }
 
       const result = await response.json();
+      await safeRecord(ctx, { userId, endpoint: "images/edits", label: "outfit", model, usage: result.usage });
       const imageBase64 = result.data?.[0]?.b64_json;
       if (!imageBase64) {
         await ctx.runMutation("outfits:patchOutfit", {
@@ -339,6 +341,7 @@ export const generateOutfitImage = action({
       try {
         const imageUrl = await ctx.storage.getUrl(storageId);
         const analysis = await analyzeOutfitImage(baseUrl, imageUrl!);
+        await safeRecord(ctx, { userId, endpoint: "responses", label: "outfit-analyze", model: process.env.OPENAI_VISION_MODEL || "gpt-5.4-mini", usage: analysis._usage });
         await ctx.runMutation("outfits:patchOutfit", {
           outfitId,
           status: "ready",
@@ -440,7 +443,7 @@ Model identity: The person in the reference photo(s) MUST be preserved exactly �
 async function analyzeOutfitImage(
   baseUrl: string,
   imageUrl: string
-): Promise<{ description: string; tags: string[] }> {
+): Promise<{ description: string; tags: string[]; _usage?: any }> {
   const model = process.env.OPENAI_VISION_MODEL || "gpt-5.4-mini";
 
   const response = await fetch(`${baseUrl}/responses`, {
@@ -479,5 +482,5 @@ async function analyzeOutfitImage(
   if (!response.ok) throw new Error(`Analysis failed: ${response.status}`);
 
   const data = await response.json();
-  return JSON.parse(data.output[0].content[0].text);
+  return { ...JSON.parse(data.output[0].content[0].text), _usage: data.usage };
 }
