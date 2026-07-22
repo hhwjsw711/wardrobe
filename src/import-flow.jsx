@@ -231,7 +231,7 @@ export function WardrobeImportFlow() {
       if (action === "approve") {
         // If garment stage, save metadata first
         if (stage === "garment") {
-          const draft = drafts[job.id];
+          const draft = drafts[job.id] || defaultDraft(job);
           const metadata = {
             ...draft,
             secondaryColor: draft.secondaryColor || null,
@@ -251,7 +251,7 @@ export function WardrobeImportFlow() {
         setSelectedReviewId(null);
       } else if (action === "regenerate") {
         await regenerateStage(job.id, stage, prompt);
-        if (action === "regenerate") setRegenerationPrompts((current) => ({ ...current, [`${job.id}:${stage}`]: "" }));
+        setRegenerationPrompts((current) => ({ ...current, [`${job.id}:${stage}`]: "" }));
       }
     } catch (requestError) { setError(requestError.message); }
     finally { setBusyId(null); }

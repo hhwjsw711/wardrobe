@@ -448,9 +448,20 @@ async function handleToolsCall(
 
 // ─── Auth ───────────────────────────────────────────────────────
 
+/**
+ * ⚠️ SECURITY WARNING: This authentication is NOT safe for production.
+ * Currently accepts a raw Convex user ID as Bearer token with ZERO verification.
+ * Anyone who knows or guesses a user ID has full access to their wardrobe.
+ * 
+ * Before exposing MCP to users:
+ *   1. Implement JWT validation using Convex Auth JWKS endpoint
+ *   2. Verify the token's `sub` claim matches a real user
+ *   3. Add rate limiting per user
+ *   4. Restrict CORS to known origins
+ * 
+ * See: https://labs.convex.dev/auth/config
+ */
 async function authenticate(request: Request, ctx: any): Promise<string> {
-  // MVP auth: Bearer token = Convex user ID
-  // Production TODO: Validate JWT from Convex Auth using JWKS
   const authHeader = request.headers.get("Authorization");
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     throw new Error(
@@ -460,8 +471,7 @@ async function authenticate(request: Request, ctx: any): Promise<string> {
   const token = authHeader.slice(7);
   if (!token) throw new Error("Empty Bearer token");
 
-  // Verify user exists by querying the currentUser function
-  // For MVP, we trust the user ID and let the Convex functions handle authorization
+  // ⚠️ MVP ONLY: Trust the raw user ID. Must be replaced with JWT validation.
   return token;
 }
 

@@ -165,7 +165,10 @@ export function useConvexWardrobe() {
   const matchProduct = useAction(api.wardrobe.productMatch);
   const generateModeledAction = useAction(api.wardrobe.generateModeledForItem);
 
-  const items = (rawItems ?? []).map(mapWardrobeItem);
+  const items = useMemo(
+    () => (rawItems ?? EMPTY_ARRAY).map(mapWardrobeItem),
+    [rawItems]
+  );
 
   return {
     items,
@@ -223,7 +226,10 @@ export function useConvexOutfits() {
   const remove = useMutation(api.outfits.deleteOutfit);
   const regenerate = useMutation(api.outfits.regenerateOutfit);
 
-  const outfits = (rawOutfits ?? []).map(mapOutfit);
+  const outfits = useMemo(
+    () => (rawOutfits ?? EMPTY_ARRAY).map(mapOutfit),
+    [rawOutfits]
+  );
 
   return {
     outfits,
@@ -345,106 +351,116 @@ export function useConvexImportFlow() {
   const setup = useMemo(() => setupStatus ?? null, [setupStatus]);
   const modelReferences = useMemo(() => rawModelRefs ?? EMPTY_MODEL_REFS, [rawModelRefs]);
 
+  // Memoized async methods — stable references prevent effect re-firing
+  const uploadAndImport = useCallback(async (files, autoProcess = false) => {
+    const images = [...files].filter((file) => file.type.startsWith("image/"));
+    if (!images.length) return { successes: 0, failures: [] };
+
+    const failures = [];
+    let successes = 0;
+
+    // Process up to 3 files concurrently (same concurrency as old code)
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < images.length) {
+        const file = images[cursor];
+        cursor += 1;
+        try {
+          // Step 1: Get upload URL
+          const uploadUrl = await generateUploadUrl({});
+          // Step 2: POST binary to Convex storage
+          const uploadResp = await fetch(uploadUrl, {
+            method: "POST",
+            headers: { "Content-Type": file.type || "image/png" },
+            body: file,
+          });
+          if (!uploadResp.ok) throw new Error(`Upload failed: ${uploadResp.status}`);
+          const { storageId } = await uploadResp.json();
+          // Step 3: Start import
+          await startImport({ sourceStorageId: storageId, autoProcess });
+          successes += 1;
+        } catch (error) {
+          failures.push({ file: file.name, error });
+        }
+      }
+    };
+
+    await Promise.all(
+      Array.from({ length: Math.min(3, images.length) }, () => worker())
+    );
+
+    return { successes, failures };
+  }, [generateUploadUrl, startImport]);
+
+  const saveModelReference = useCallback(async (files) => {
+    const images = [...files].filter((file) => file.type.startsWith("image/"));
+    if (!images.length) return;
+
+    for (const file of images) {
+      const uploadUrl = await generateUploadUrl({});
+      const uploadResp = await fetch(uploadUrl, {
+        method: "POST",
+        headers: { "Content-Type": file.type || "image/png" },
+        body: file,
+      });
+      if (!uploadResp.ok) throw new Error(`Upload failed: ${uploadResp.status}`);
+      const { storageId } = await uploadResp.json();
+      await saveRef({ storageId });
+    }
+  }, [generateUploadUrl, saveRef]);
+
+  const approveStage = useCallback(async (jobId, stage) => {
+    await approve({ jobId, stage });
+  }, [approve]);
+
+  const rejectStage = useCallback(async (jobId, stage) => {
+    await reject({ jobId, stage });
+  }, [reject]);
+
+  const regenerateStage = useCallback(async (jobId, stage, prompt = "") => {
+    await regenerate({ jobId, stage, prompt: prompt || undefined });
+  }, [regenerate]);
+
+  const updateJobMetadata = useCallback(async (jobId, metadata) => {
+    await updateMeta({ jobId, metadata });
+  }, [updateMeta]);
+
+  const deleteJob = useCallback(async (jobId) => {
+    await removeJob({ jobId });
+  }, [removeJob]);
+
+  const retryAnalysis = useCallback(async (jobId) => {
+    await retry({ jobId });
+  }, [retry]);
+
+  const deleteModelReference = useCallback(async (refId) => {
+    await deleteRef({ refId });
+  }, [deleteRef]);
+
+  const cleanupPreview = useCallback(async (jobId, tolerance) => {
+    return cleanupPreviewAction({ jobId, tolerance });
+  }, [cleanupPreviewAction]);
+
+  const cleanupAccept = useCallback(async (jobId) => {
+    return cleanupAcceptAction({ jobId });
+  }, [cleanupAcceptAction]);
+
   return {
     jobs,
     setup,
     modelReferences,
     loading: rawJobs === undefined || setupStatus === undefined,
-
-    /** Upload files and start imports. Returns { successes, failures }. */
-    uploadAndImport: async (files, autoProcess = false) => {
-      const images = [...files].filter((file) => file.type.startsWith("image/"));
-      if (!images.length) return { successes: 0, failures: [] };
-
-      const failures = [];
-      let successes = 0;
-
-      // Process up to 3 files concurrently (same concurrency as old code)
-      let cursor = 0;
-      const worker = async () => {
-        while (cursor < images.length) {
-          const file = images[cursor];
-          cursor += 1;
-          try {
-            // Step 1: Get upload URL
-            const uploadUrl = await generateUploadUrl({});
-            // Step 2: POST binary to Convex storage
-            const uploadResp = await fetch(uploadUrl, {
-              method: "POST",
-              headers: { "Content-Type": file.type || "image/png" },
-              body: file,
-            });
-            if (!uploadResp.ok) throw new Error(`Upload failed: ${uploadResp.status}`);
-            const { storageId } = await uploadResp.json();
-            // Step 3: Start import
-            await startImport({ sourceStorageId: storageId, autoProcess });
-            successes += 1;
-          } catch (error) {
-            failures.push({ file: file.name, error });
-          }
-        }
-      };
-
-      await Promise.all(
-        Array.from({ length: Math.min(3, images.length) }, () => worker())
-      );
-
-      return { successes, failures };
-    },
-
-    /** Save model reference photos. */
-    saveModelReference: async (files) => {
-      const images = [...files].filter((file) => file.type.startsWith("image/"));
-      if (!images.length) return;
-
-      for (const file of images) {
-        const uploadUrl = await generateUploadUrl({});
-        const uploadResp = await fetch(uploadUrl, {
-          method: "POST",
-          headers: { "Content-Type": file.type || "image/png" },
-          body: file,
-        });
-        if (!uploadResp.ok) throw new Error(`Upload failed: ${uploadResp.status}`);
-        const { storageId } = await uploadResp.json();
-        await saveRef({ storageId });
-      }
-    },
-
-    approveStage: async (jobId, stage) => {
-      await approve({ jobId, stage });
-    },
-
-    rejectStage: async (jobId, stage) => {
-      await reject({ jobId, stage });
-    },
-
-    regenerateStage: async (jobId, stage, prompt = "") => {
-      await regenerate({ jobId, stage, prompt: prompt || undefined });
-    },
-
-    updateJobMetadata: async (jobId, metadata) => {
-      await updateMeta({ jobId, metadata });
-    },
-
-    deleteJob: async (jobId) => {
-      await removeJob({ jobId });
-    },
-
-    retryAnalysis: async (jobId) => {
-      await retry({ jobId });
-    },
-
-    deleteModelReference: async (refId) => {
-      await deleteRef({ refId });
-    },
-
-    cleanupPreview: async (jobId, tolerance) => {
-      return cleanupPreviewAction({ jobId, tolerance });
-    },
-
-    cleanupAccept: async (jobId) => {
-      return cleanupAcceptAction({ jobId });
-    },
+    uploadAndImport,
+    saveModelReference,
+    approveStage,
+    rejectStage,
+    regenerateStage,
+    updateJobMetadata,
+    deleteJob,
+    retryAnalysis,
+    deleteModelReference,
+    cleanupPreview,
+    cleanupAccept,
   };
 }
 

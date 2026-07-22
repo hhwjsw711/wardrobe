@@ -447,6 +447,7 @@ function ItemViewer({ item, onClose, onSave, onDelete, onIdentifyProduct, onGene
     } catch (error) {
       setActionError(error.message);
       setConfirmingDelete(false);
+    } finally {
       setSaving(false);
     }
   };
@@ -1176,6 +1177,12 @@ export function App() {
   const [selectedOutfitId, setSelectedOutfitId] = useState(null);
   const [showCreator, setShowCreator] = useState(false);
 
+  // Stable callbacks for ItemViewer/OutfitViewer — prevents focus-stealing
+  // and effect re-runs caused by inline arrow functions on every render.
+  const handleCloseItem = useCallback(() => setSelectedId(null), []);
+  const handleCloseOutfit = useCallback(() => setSelectedOutfitId(null), []);
+  const handleCloseCreator = useCallback(() => setShowCreator(false), []);
+
   // Try-on jobs for the currently-selected outfit (real-time, skipped
   // when nothing is selected). Bound to selectedOutfitId so the viewer
   // can render pending → processing → done/failed transitions live.
@@ -1260,9 +1267,9 @@ export function App() {
   // Convex real-time subscriptions replace loadOutfits + polling entirely.
 
   const createOutfit = async ({ name, garmentIds }) => {
-    setShowCreator(false);
     try {
       await outfitsHook.createOutfit({ name, garmentIds });
+      setShowCreator(false);
     } catch (err) {
       setError(err.message);
     }
@@ -1375,7 +1382,7 @@ export function App() {
         )}
       </main>
 
-      {selectedItem && <ItemViewer item={selectedItem} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} onIdentifyProduct={identifyProduct} onGenerateModeled={generateModeled} />}
+      {selectedItem && <ItemViewer item={selectedItem} onClose={handleCloseItem} onSave={saveItem} onDelete={deleteItem} onIdentifyProduct={identifyProduct} onGenerateModeled={generateModeled} />}
       {selectedOutfit && (
         <OutfitViewer
           outfit={selectedOutfit}
@@ -1384,7 +1391,7 @@ export function App() {
               .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""))
               .findIndex((o) => o.id === selectedOutfit.id) + 1
           }
-          onClose={() => setSelectedOutfitId(null)}
+          onClose={handleCloseOutfit}
           onDelete={deleteOutfit}
           onRegenerate={regenerateOutfit}
           tryonJobs={tryonHook.jobs}
@@ -1394,7 +1401,7 @@ export function App() {
       {showCreator && (
         <OutfitCreator
           items={items}
-          onCancel={() => setShowCreator(false)}
+          onCancel={handleCloseCreator}
           onCreate={createOutfit}
         />
       )}

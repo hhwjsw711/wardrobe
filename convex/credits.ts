@@ -155,6 +155,23 @@ async function refundCreditsImpl(
   reason?: string,
   refId?: string
 ): Promise<{ balance: number }> {
+  // Dedup: if a refund for this refId already exists, skip
+  if (refId) {
+    const existing = await ctx.db
+      .query("creditLedger")
+      .withIndex("by_user_reason", (q) =>
+        q.eq("userId", userId).eq("reason", "refund")
+      )
+      .filter((entry) => entry.refId === refId)
+      .first();
+    if (existing) {
+      return { balance: (await ensureUserFields(ctx, userId)).creditBalance };
+    }
+  }
+
+  // Validate amount is positive
+  if (amount <= 0) throw new Error("Refund amount must be positive");
+
   const user = await ensureUserFields(ctx, userId);
 
   const currentBalance = user.creditBalance;

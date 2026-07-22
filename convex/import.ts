@@ -597,7 +597,7 @@ export const analyzeUpload = action({
 });
 
 /** Internal mutation: update the analysis status on an upload job. */
-export const updateUploadJobAnalysis = mutation({
+export const updateUploadJobAnalysis = internalMutation({
   args: {
     jobId: v.id("importJobs"),
     status: v.union(
@@ -1092,7 +1092,7 @@ export const runProductMatch = action({
 // ─── Internal Mutations (called by actions) ──────────────────────
 
 /** Update a stage's status (and optionally its storageId, chromaKey, etc.). */
-export const updateStageStatus = mutation({
+export const updateStageStatus = internalMutation({
   args: {
     jobId: v.id("importJobs"),
     stage: v.union(v.literal("crop"), v.literal("garment"), v.literal("modeled")),
@@ -1205,6 +1205,8 @@ export const updateCleanupFields = internalMutation({
     const job = await ctx.db.get(jobId);
     if (!job) throw new Error("Not found");
     const stages = job.stages || { crop: {}, garment: {}, modeled: {} };
+    // Delete previous preview image if it exists (avoid storage leak)
+    const oldPreviewId = stages.garment?.cleanupPreviewStorageId;
     stages.garment = {
       ...stages.garment,
       cleanupTolerance,
@@ -1212,6 +1214,9 @@ export const updateCleanupFields = internalMutation({
       cleanupPreviewStorageId,
     };
     await ctx.db.patch(jobId, { stages });
+    if (oldPreviewId && oldPreviewId !== cleanupPreviewStorageId) {
+      await ctx.storage.delete(oldPreviewId);
+    }
   },
 });
 
@@ -1226,18 +1231,25 @@ export const promoteCleanupPreview = internalMutation({
     const stages = job.stages || { crop: {}, garment: {}, modeled: {} };
     const garment = stages.garment;
     if (!garment?.cleanupPreviewStorageId) throw new Error("No cleanup preview to accept");
+    // Delete the failed-source image — no longer needed after accepting cleanup
+    const failedId = garment.failedStorageId;
     stages.garment = {
       ...garment,
       status: "review" as const,
       storageId: garment.cleanupPreviewStorageId,
       error: undefined,
+      failedStorageId: undefined,
+      chromaKey: undefined,
     };
     await ctx.db.patch(jobId, { stages });
+    if (failedId) {
+      await ctx.storage.delete(failedId);
+    }
   },
 });
 
 /** Auto-approve garment: create wardrobe item + schedule modeled. */
-export const autoApproveGarment = mutation({
+export const autoApproveGarment = internalMutation({
   args: {
     jobId: v.id("importJobs"),
     garmentStorageId: v.id("_storage"),
@@ -1273,7 +1285,7 @@ export const autoApproveGarment = mutation({
 });
 
 /** Auto-approve modeled: update wardrobe item + schedule product match. */
-export const autoApproveModeled = mutation({
+export const autoApproveModeled = internalMutation({
   args: {
     jobId: v.id("importJobs"),
     modeledStorageId: v.id("_storage"),
@@ -1297,7 +1309,7 @@ export const autoApproveModeled = mutation({
 });
 
 /** Update productMatch status on an import job. */
-export const updateProductMatchStatus = mutation({
+export const updateProductMatchStatus = internalMutation({
   args: {
     jobId: v.id("importJobs"),
     status: v.union(
