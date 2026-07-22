@@ -74,20 +74,18 @@ export async function deductTryonImpl(
   return { balance: newBalance };
 }
 
-/** Deduct credits for try-on. Throws if insufficient balance. */
-export const deductTryon = mutation({
-  args: { refId: v.optional(v.string()) },
-  handler: async (ctx, { refId }) => {
-    const userId = await requireAuthedUserId(ctx);
+/** Internal: deduct credits for try-on. Called by tryon.startTryon. */
+export const deductTryon = internalMutation({
+  args: { userId: v.id("users"), refId: v.optional(v.string()) },
+  handler: async (ctx, { userId, refId }) => {
     return deductTryonImpl(ctx, userId, refId);
   },
 });
 
-/** Deduct credits for photo search. Throws if insufficient balance. */
-export const deductSearch = mutation({
-  args: { refId: v.optional(v.string()) },
-  handler: async (ctx, { refId }) => {
-    const userId = await requireAuthedUserId(ctx);
+/** Internal: deduct credits for product search. Called by wardrobe actions. */
+export const deductSearch = internalMutation({
+  args: { userId: v.id("users"), refId: v.optional(v.string()) },
+  handler: async (ctx, { userId, refId }) => {
     const user = await ensureUserFields(ctx, userId);
 
     if (user.creditBalance < CREDITS_SEARCH) {
@@ -111,28 +109,13 @@ export const deductSearch = mutation({
   },
 });
 
-/** Refund credits (e.g. failed try-on). */
-export const refundCredits = mutation({
-  args: {
-    amount: v.number(),
-    reason: v.optional(v.string()),
-    refId: v.optional(v.string()),
-  },
-  handler: async (ctx, { amount, reason, refId }) => {
-    const userId = await requireAuthedUserId(ctx);
-    return refundCreditsImpl(ctx, userId, amount, reason, refId);
-  },
-});
-
 /**
  * Internal: refund credits for a specific user, no auth check.
  *
- * Used by `tryon.processTryon` action when a try-on job fails. Actions
- * invoked via the scheduler don't carry user auth context, so the public
- * `refundCredits` mutation (which calls requireAuthedUserId) would throw.
- * This internal variant takes userId explicitly.
+ * Used by actions that don't carry user auth context (e.g. try-on
+ * processTryon invoked via scheduler). Takes userId explicitly.
  */
-export const refundCreditsInternal = internalMutation({
+export const refundCredits = internalMutation({
   args: {
     userId: v.id("users"),
     amount: v.number(),
@@ -188,6 +171,91 @@ async function refundCreditsImpl(
 
   return { balance: newBalance };
 }
+
+// ─── Internal credit deductions (called from actions) ───────────
+
+/** Internal: deduct credits for product search. Called by wardrobe.productMatch. */
+export const deductSearchInternal = internalMutation({
+  args: { userId: v.id("users"), refId: v.optional(v.string()) },
+  handler: async (ctx, { userId, refId }) => {
+    const user = await ensureUserFields(ctx, userId);
+
+    if (user.creditBalance < CREDITS_SEARCH) {
+      throw new Error(
+        `Insufficient credits. Need ${CREDITS_SEARCH}, have ${user.creditBalance}.`
+      );
+    }
+
+    const newBalance = user.creditBalance - CREDITS_SEARCH;
+    const profile = await getOrCreateProfile(ctx, userId);
+    await ctx.db.patch(profile._id, { creditBalance: newBalance });
+    await ctx.db.insert("creditLedger", {
+      userId,
+      delta: -CREDITS_SEARCH,
+      reason: "search",
+      refId,
+      balanceAfter: newBalance,
+    });
+
+    return { balance: newBalance };
+  },
+});
+
+/** Internal: deduct credits for modeled photo generation. Called by wardrobe.generateModeledForItem. */
+export const deductModeledInternal = internalMutation({
+  args: { userId: v.id("users"), refId: v.optional(v.string()) },
+  handler: async (ctx, { userId, refId }) => {
+    const user = await ensureUserFields(ctx, userId);
+
+    const MODELED_COST = 10;
+    if (user.creditBalance < MODELED_COST) {
+      throw new Error(
+        `Insufficient credits. Need ${MODELED_COST}, have ${user.creditBalance}.`
+      );
+    }
+
+    const newBalance = user.creditBalance - MODELED_COST;
+    const profile = await getOrCreateProfile(ctx, userId);
+    await ctx.db.patch(profile._id, { creditBalance: newBalance });
+    await ctx.db.insert("creditLedger", {
+      userId,
+      delta: -MODELED_COST,
+      reason: "modeled",
+      refId,
+      balanceAfter: newBalance,
+    });
+
+    return { balance: newBalance };
+  },
+});
+
+/** Internal: deduct credits for photo analysis. Called by wardrobe.analyzePhoto. */
+export const deductAnalyzeInternal = internalMutation({
+  args: { userId: v.id("users"), refId: v.optional(v.string()) },
+  handler: async (ctx, { userId, refId }) => {
+    const user = await ensureUserFields(ctx, userId);
+
+    const ANALYZE_COST = 5;
+    if (user.creditBalance < ANALYZE_COST) {
+      throw new Error(
+        `Insufficient credits. Need ${ANALYZE_COST}, have ${user.creditBalance}.`
+      );
+    }
+
+    const newBalance = user.creditBalance - ANALYZE_COST;
+    const profile = await getOrCreateProfile(ctx, userId);
+    await ctx.db.patch(profile._id, { creditBalance: newBalance });
+    await ctx.db.insert("creditLedger", {
+      userId,
+      delta: -ANALYZE_COST,
+      reason: "analyze",
+      refId,
+      balanceAfter: newBalance,
+    });
+
+    return { balance: newBalance };
+  },
+});
 
 /** Grant monthly credits (called by cron or on login). */
 export const grantMonthlyCredits = mutation({

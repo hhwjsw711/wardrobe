@@ -1085,18 +1085,21 @@ button { font: inherit; }
   transition: opacity .35s ease, transform .4s cubic-bezier(.34, 1.4, .64, 1);
 }
 
-.outfit-gallery-item:hover .outfit-photo {
-  opacity: .12;
-  filter: saturate(.6);
-}
+/* A-23: Only apply outfit hover effects on devices with hover capability (not touch) */
+@media (hover: hover) {
+  .outfit-gallery-item:hover .outfit-photo {
+    opacity: .12;
+    filter: saturate(.6);
+  }
 
-.outfit-gallery-item:hover .outfit-garments-overlay {
-  opacity: 1;
-}
+  .outfit-gallery-item:hover .outfit-garments-overlay {
+    opacity: 1;
+  }
 
-.outfit-gallery-item:hover .outfit-garment-cutout {
-  opacity: 1;
-  transform: scale(1) rotate(var(--rot, 0deg));
+  .outfit-gallery-item:hover .outfit-garment-cutout {
+    opacity: 1;
+    transform: scale(1) rotate(var(--rot, 0deg));
+  }
 }
 
 .outfit-placeholder {

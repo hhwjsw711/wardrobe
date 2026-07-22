@@ -175,8 +175,8 @@ function TagEditor({ tags, onChange }) {
   return (
     <div className="tag-editor">
       <div className="editable-tags">
-        {tags.map((tag) => (
-          <span className="editable-tag" key={tag}>
+        {tags.map((tag, i) => (
+          <span className="editable-tag" key={`${tag}-${i}`}>
             {tag}
             <button type="button" onClick={() => onChange(tags.filter((existing) => existing !== tag))} aria-label={`Remove ${tag}`}>
               <X size={12} weight="regular" aria-hidden="true" />
@@ -345,6 +345,24 @@ function ItemViewer({ item, onClose, onSave, onDelete, onIdentifyProduct, onGene
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [matchingProduct, setMatchingProduct] = useState(false);
   const [generatingModeled, setGeneratingModeled] = useState(false);
+
+  // A-11/A-20: Only reset draft when the item ID changes, not on every
+  // Convex real-time update. Without this, any wardrobe mutation (e.g. saving
+  // a different field) resets the user's unsaved edits.
+  const prevItemIdRef = useRef(null);
+  useEffect(() => {
+    if (prevItemIdRef.current === item.id) return;
+    prevItemIdRef.current = item.id;
+    setSampling(null);
+    setSampleStatus("");
+    setActionError("");
+    setConfirmingDelete(false);
+    setMatchingProduct(false);
+    setGeneratingModeled(false);
+    setPalette(item.palette || []);
+    setDraft({ name: item.name || "", part: item.part, color: item.color || "#9a9286", secondaryColor: item.secondaryColor || null, tags: [...(item.tags || [])] });
+  }, [item.id]);
+
   const type = TYPE_MAP[item.part]?.singular || "Wardrobe item";
   const hasModeledImage = Boolean(item.modeledImage);
   const pieceRotation = useMemo(() => {
@@ -405,17 +423,6 @@ function ItemViewer({ item, onClose, onSave, onDelete, onIdentifyProduct, onGene
   useEffect(() => {
     if (!isDirty) setCloseBlocked(false);
   }, [isDirty]);
-
-  useEffect(() => {
-    setSampling(null);
-    setSampleStatus("");
-    setActionError("");
-    setConfirmingDelete(false);
-    setMatchingProduct(false);
-    setGeneratingModeled(false);
-    setPalette(item.palette || []);
-    setDraft({ name: item.name || "", part: item.part, color: item.color || "#9a9286", secondaryColor: item.secondaryColor || null, tags: [...(item.tags || [])] });
-  }, [item]);
 
   const cancelEditing = () => {
     setDraft({ name: item.name || "", part: item.part, color: item.color || "#9a9286", secondaryColor: item.secondaryColor || null, tags: [...(item.tags || [])] });
@@ -822,6 +829,10 @@ function OutfitGalleryItem({ outfit, onOpen }) {
 
 function OutfitViewer({ outfit, lookNumber, onClose, onDelete, onRegenerate, tryonJobs, onTryOn }) {
   const closeButtonRef = useRef(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+  const [outfitError, setOutfitError] = useState("");
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -992,11 +1003,27 @@ function OutfitViewer({ outfit, lookNumber, onClose, onDelete, onRegenerate, try
             </div>
 
             <div className="viewer-actions outfit-viewer-actions">
-              <button className="viewer-quiet-button" type="button" onClick={() => onDelete(outfit.id)} aria-label="Delete outfit">
-                <Trash size={15} weight="regular" aria-hidden="true" />
-              </button>
+              {confirmingDelete ? (
+                <div className="delete-confirmation">
+                  <span>Delete this outfit?</span>
+                  <button className="delete-button" type="button" onClick={async () => {
+                    setDeleting(true);
+                    setOutfitError("");
+                    try { await onDelete(outfit.id); } catch (err) { setOutfitError(err.message); setConfirmingDelete(false); } finally { setDeleting(false); }
+                  }} disabled={deleting}>Delete</button>
+                  <button className="secondary-button" type="button" onClick={() => setConfirmingDelete(false)} disabled={deleting}>Keep</button>
+                </div>
+              ) : (
+                <button className="viewer-quiet-button" type="button" onClick={() => setConfirmingDelete(true)} aria-label="Delete outfit" disabled={deleting || regenerating}>
+                  <Trash size={15} weight="regular" aria-hidden="true" />
+                </button>
+              )}
               {outfit.status === "ready" && (
-                <button className="viewer-quiet-button" type="button" onClick={() => onRegenerate(outfit.id)} aria-label="Regenerate outfit">
+                <button className="viewer-quiet-button" type="button" onClick={async () => {
+                  setRegenerating(true);
+                  setOutfitError("");
+                  try { await onRegenerate(outfit.id); } catch (err) { setOutfitError(err.message); } finally { setRegenerating(false); }
+                }} aria-label="Regenerate outfit" disabled={deleting || regenerating}>
                   <ArrowsClockwise size={15} weight="regular" aria-hidden="true" />
                 </button>
               )}
@@ -1019,15 +1046,24 @@ function OutfitViewer({ outfit, lookNumber, onClose, onDelete, onRegenerate, try
                 </button>
               )}
               {outfit.status === "failed" && (
-                <button className="secondary-button" type="button" onClick={() => onRegenerate(outfit.id)}>
+                <button className="secondary-button" type="button" onClick={async () => {
+                  setRegenerating(true);
+                  setOutfitError("");
+                  try { await onRegenerate(outfit.id); } catch (err) { setOutfitError(err.message); } finally { setRegenerating(false); }
+                }} disabled={regenerating}>
                   <ArrowsClockwise size={15} weight="bold" aria-hidden="true" /> Retry
                 </button>
               )}
               {outfit.status === "stalled" && (
-                <button className="secondary-button" type="button" onClick={() => onRegenerate(outfit.id)}>
+                <button className="secondary-button" type="button" onClick={async () => {
+                  setRegenerating(true);
+                  setOutfitError("");
+                  try { await onRegenerate(outfit.id); } catch (err) { setOutfitError(err.message); } finally { setRegenerating(false); }
+                }} disabled={regenerating}>
                   <ArrowsClockwise size={15} weight="bold" aria-hidden="true" /> Retry
                 </button>
               )}
+              {outfitError && <p className="viewer-action-error" role="alert">{outfitError}</p>}
             </div>
           </div>
         </aside>
@@ -1142,13 +1178,17 @@ export function App() {
   // guard with a ref so the effect fires at most once even if the
   // mutation function reference or auth state fluctuates between
   // renders (avoids Maximum update depth exceeded loops).
+  // A-13: Track provisionUser failure for retry UI
+  const [provisionError, setProvisionError] = useState(false);
   const provisionedRef = useRef(false);
   useEffect(() => {
     if (!isAuthenticated || provisionedRef.current) return;
     provisionedRef.current = true;
+    setProvisionError(false);
     provisionUser().catch((err) => {
       // Reset on failure so a subsequent auth transition can retry.
       provisionedRef.current = false;
+      setProvisionError(true);
       console.warn("[provisionUser] failed:", err?.message ?? err);
     });
   }, [isAuthenticated, provisionUser]);
@@ -1190,8 +1230,19 @@ export function App() {
   // can render pending → processing → done/failed transitions live.
   const tryonHook = useConvexTryon(selectedOutfitId);
 
-  // Connection status derived from Convex loading state
-  const connection = loading ? "connecting" : "connected";
+  // Connection status derived from Convex loading state + navigator.onLine
+  const [isOnline, setIsOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
+  useEffect(() => {
+    const goOnline = () => setIsOnline(true);
+    const goOffline = () => setIsOnline(false);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
+  }, []);
+  const connection = !isOnline ? "offline" : loading ? "connecting" : "connected";
 
   // Ref for latest items (used in identifyProduct + import bridge)
   const itemsRef = useRef(items);
@@ -1309,6 +1360,20 @@ export function App() {
 
   // Auth gate: all hooks above have run, safe to short-circuit the JSX.
   if (!isAuthenticated) return <AuthForm />;
+  if (provisionError) {
+    return (
+      <div className="auth-screen">
+        <div className="auth-card">
+          <h2 className="auth-title">Setup incomplete</h2>
+          <p className="auth-subtitle">Could not set up your account. Please try again.</p>
+          <button className="auth-submit" type="button" onClick={() => {
+            provisionedRef.current = false;
+            setProvisionError(false);
+          }}>Retry</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`app-shell${selectedItem || selectedOutfit ? " has-selection" : ""}`}>
@@ -1320,9 +1385,9 @@ export function App() {
               <h1>My wardrobe</h1>
             </div>
             <div className="gallery-status">
-              <p className={`connection-status is-${connection}`}>
+              <p className={`connection-status ${connection === "connected" ? "is-connected" : connection === "offline" ? "" : "is-saved"}`}>
                 <span aria-hidden="true" />
-                {connection === "connected" ? "Cloud synced" : "Connecting"}
+                {connection === "connected" ? "Cloud synced" : connection === "offline" ? "Offline" : "Connecting"}
               </p>
               <p className="piece-count">
                 {isOutfitsView

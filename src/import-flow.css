@@ -298,8 +298,10 @@
 @keyframes import-spin { to { transform: rotate(360deg); } }
 .import-spinner { animation: import-spin 900ms linear infinite; }
 
+/* A-24: Hide import tray whenever a viewer overlay is open, at any screen size */
+.app-shell.has-selection .import-tray { display: none; }
+
 @media (max-width: 640px) {
-  .app-shell.has-selection .import-tray { display: none; }
   .import-tray { left: 12px; bottom: max(12px, env(safe-area-inset-bottom)); max-width: calc(100vw - 24px); }
   .import-tray__actions { max-width: 0; }
   .import-tray:focus-within .import-tray__actions,

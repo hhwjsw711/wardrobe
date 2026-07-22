@@ -133,11 +133,14 @@ export const createOutfit = mutation({
   handler: async (ctx, args) => {
     const userId = await requireAuthedUserId(ctx);
 
+    // Deduplicate garment IDs to prevent double-counting
+    const garmentIds = [...new Set(args.garmentIds)];
+
     // Validate: 2-6 garments, all owned by user
-    if (args.garmentIds.length < 2 || args.garmentIds.length > 6) {
+    if (garmentIds.length < 2 || garmentIds.length > 6) {
       throw new Error("Outfit must have 2–6 garments");
     }
-    for (const gid of args.garmentIds) {
+    for (const gid of garmentIds) {
       const item = await ctx.db.get(gid);
       if (!item || item.userId !== userId) throw new Error(`Garment ${gid} not found`);
     }
@@ -148,7 +151,7 @@ export const createOutfit = mutation({
     const outfitId = await ctx.db.insert("outfits", {
       userId,
       name,
-      garmentIds: args.garmentIds,
+      garmentIds,
       setting,
       status: "generating",
       tags: [],
@@ -205,8 +208,8 @@ export const regenerateOutfit = mutation({
 
 // ─── Internal Actions (AI generation) ──────────────────────────
 
-/** Generate outfit image via OpenAI gpt-image-1. */
-export const generateOutfitImage = action({
+/** Generate outfit image via OpenAI gpt-image-1 (internal — called via scheduler). */
+export const generateOutfitImage = internalAction({
   args: { outfitId: v.id("outfits") },
   handler: async (ctx, { outfitId }) => {
     // Read outfit and garments from DB (actions cannot use ctx.db directly)

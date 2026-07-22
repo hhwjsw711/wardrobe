@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { query, mutation, action, internalQuery, internalMutation } from "./_generated/server";
+import { query, mutation, action, internalQuery, internalMutation, internalAction } from "./_generated/server";
 import { requireAuthedUserId } from "./helpers";
 import { safeRecord } from "./usage";
 
@@ -155,6 +155,18 @@ export const startTryon = mutation({
     if (!outfit || outfit.userId !== userId) throw new Error("Outfit not found");
     if (outfit.status !== "ready") throw new Error("Outfit not ready for try-on");
 
+    // A-09: Rate limit — max 5 pending/processing try-on jobs per outfit
+    const existingJobs = await ctx.db
+      .query("tryonJobs")
+      .withIndex("by_outfit", (q) => q.eq("outfitId", outfitId))
+      .collect();
+    const activeCount = existingJobs.filter(
+      (j) => j.status === "pending" || j.status === "processing"
+    ).length;
+    if (activeCount >= 5) {
+      throw new Error("Too many try-on requests for this outfit. Please wait for existing ones to complete.");
+    }
+
     // Create the job — no credit deduction (free experimental feature).
     const jobId = await ctx.db.insert("tryonJobs", {
       userId,
@@ -169,8 +181,8 @@ export const startTryon = mutation({
   },
 });
 
-/** Process a try-on job (called by scheduler after credit deduction). */
-export const processTryon = action({
+/** Process a try-on job (called by scheduler — internal action). */
+export const processTryon = internalAction({
   args: { jobId: v.id("tryonJobs") },
   handler: async (ctx, { jobId }) => {
     const job = await ctx.runQuery("tryon:getTryonJobById", { jobId });

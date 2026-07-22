@@ -2,6 +2,7 @@
 
 import { v } from "convex/values";
 import { action } from "./_generated/server";
+import { getAuthUserId } from "@convex-dev/auth/server";
 import sharp from "sharp";
 
 // ─── Image processing actions (Node.js runtime) ────────────────────
@@ -59,6 +60,9 @@ export const cropDetectedItem = action({
     }),
   },
   handler: async (ctx, { sourceStorageId, boundingBox }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Unauthorized");
+
     const sourceUrl = await ctx.storage.getUrl(sourceStorageId);
     if (!sourceUrl) throw new Error("Source image not found");
 
@@ -242,6 +246,9 @@ export const processGarmentImage = action({
     chromaKey: v.string(),
   },
   handler: async (ctx, { imageBase64, chromaKey }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Unauthorized");
+
     const rawBuffer = Buffer.from(imageBase64, "base64");
 
     let processedBuffer: Buffer;
@@ -258,14 +265,19 @@ export const processGarmentImage = action({
       processedBuffer = rawBuffer;
     }
 
-    // Upload raw (failed-source) for cleanup editor fallback
-    const failedUploadUrl = await ctx.storage.generateUploadUrl();
-    const failedResp = await fetch(failedUploadUrl, {
-      method: "POST",
-      headers: { "Content-Type": "image/png" },
-      body: rawBuffer,
-    });
-    const { storageId: failedStorageId } = await failedResp.json();
+    // A-19: Only upload failedStorageId when chroma actually failed
+    // (saves storage when cleanup succeeds)
+    let failedStorageId: string | null = null;
+    if (!chromaSuccess) {
+      const failedUploadUrl = await ctx.storage.generateUploadUrl();
+      const failedResp = await fetch(failedUploadUrl, {
+        method: "POST",
+        headers: { "Content-Type": "image/png" },
+        body: rawBuffer,
+      });
+      const result = await failedResp.json();
+      failedStorageId = result.storageId;
+    }
 
     // Upload processed (cleaned) garment to Convex storage
     const garmentUploadUrl = await ctx.storage.generateUploadUrl();
@@ -276,8 +288,7 @@ export const processGarmentImage = action({
     });
     const { storageId: garmentStorageId } = await garmentResp.json();
 
-    return { garmentStorageId, failedStorageId, verification, chromaSuccess };
-  },
+    return { garmentStorageId, failedStorageId, verification, chromaSuccess };  },
 });
 
 /** Cleanup editor: re-process a failed garment image with a user-specified tolerance.
@@ -290,6 +301,9 @@ export const cleanupGarmentPreview = action({
     tolerance: v.number(),
   },
   handler: async (ctx, { failedStorageId, chromaKey, tolerance }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Unauthorized");
+
     // Clamp tolerance to [18, 110] like the original upstream
     const clampedTolerance = Math.max(18, Math.min(110, tolerance));
 

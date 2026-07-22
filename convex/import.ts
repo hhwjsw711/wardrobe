@@ -1,7 +1,8 @@
 import { v } from "convex/values";
-import { mutation, action, query, internalQuery, internalMutation } from "./_generated/server";
+import { mutation, action, internalAction, query, internalQuery, internalMutation } from "./_generated/server";
 import { requireAuthedUserId, sanitizeColor } from "./helpers";
 import { safeRecord } from "./usage";
+import { getAuthUserId } from "@convex-dev/auth/server";
 
 // ─── Import Pipeline ────────────────────────────────────────────
 //
@@ -46,6 +47,18 @@ export const getModelReferencesForUser = internalQuery({
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .collect();
     return refs.map((r) => r.storageId);
+  },
+});
+
+/** Internal: get import jobs for a user (lightweight — only sourceStorageId). */
+export const getImportJobsForUser = internalQuery({
+  args: { userId: v.id("users") },
+  handler: async (ctx, { userId }) => {
+    const jobs = await ctx.db
+      .query("importJobs")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    return jobs.map((j) => ({ sourceStorageId: j.sourceStorageId }));
   },
 });
 
@@ -186,8 +199,16 @@ export const startImport = mutation({
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .collect();
     const activeCount = pending.filter((j) => {
-      const s = j.kind === "upload" ? j.analysis?.status : j.stages?.crop?.status;
-      return s !== "approved" && s !== "rejected";
+      // Check all stages for active status
+      if (j.kind === "upload") {
+        return j.analysis?.status !== "complete" && j.analysis?.status !== "empty";
+      }
+      const s = j.stages;
+      if (!s) return false;
+      const cropDone = s.crop?.status === "approved" || s.crop?.status === "rejected";
+      const garmentDone = s.garment?.status === "approved" || s.garment?.status === "rejected";
+      const modeledDone = s.modeled?.status === "approved" || s.modeled?.status === "rejected";
+      return !(cropDone && garmentDone && modeledDone);
     }).length;
     if (activeCount >= 10) {
       throw new Error("Too many active imports. Wait for some to finish before adding more.");
@@ -211,8 +232,8 @@ export const startImport = mutation({
   },
 });
 
-/** Create item jobs after analysis detects clothing items (internal, called by analyzeUpload). */
-export const createItemJobs = mutation({
+/** Create item jobs after analysis detects clothing items (internal — called by analyzeUpload). */
+export const createItemJobs = internalMutation({
   args: {
     userId: v.id("users"),
     uploadJobId: v.id("importJobs"),
@@ -319,6 +340,9 @@ export const approveStage = mutation({
 
     const stages = job.stages || { crop: {}, garment: {}, modeled: {} };
 
+    // Double-click guard: if already approved, skip (prevents duplicate wardrobe items)
+    if (stages[stage]?.status === "approved") return;
+
     if (stage === "crop") {
       // Approve crop → start garment generation
       stages.crop = { ...stages.crop, status: "approved" };
@@ -403,6 +427,7 @@ export const deleteJob = mutation({
     if (stages.crop?.storageId) await ctx.storage.delete(stages.crop.storageId);
     if (stages.garment?.storageId) await ctx.storage.delete(stages.garment.storageId);
     if (stages.garment?.failedStorageId) await ctx.storage.delete(stages.garment.failedStorageId);
+    if (stages.garment?.cleanupPreviewStorageId) await ctx.storage.delete(stages.garment.cleanupPreviewStorageId);
     if (stages.modeled?.storageId) await ctx.storage.delete(stages.modeled.storageId);
 
     await ctx.db.delete(jobId);
@@ -438,8 +463,8 @@ export const deleteModelReference = mutation({
 
 // ─── Actions ────────────────────────────────────────────────────
 
-/** Analyze an uploaded photo and detect clothing items. */
-export const analyzeUpload = action({
+/** Analyze an uploaded photo and detect clothing items (internal — called by scheduler). */
+export const analyzeUpload = internalAction({
   args: {
     userId: v.id("users"),
     jobId: v.id("importJobs"),
@@ -630,8 +655,8 @@ export const updateUploadJobAnalysis = internalMutation({
   },
 });
 
-/** Generate a garment cutout from the source photo. */
-export const generateGarment = action({
+/** Generate a garment cutout from the source photo (internal — called via scheduler). */
+export const generateGarment = internalAction({
   args: {
     jobId: v.id("importJobs"),
     sourceStorageId: v.id("_storage"),
@@ -750,7 +775,7 @@ Critical: Use no ${chromaKey} anywhere in the garment. Produce exactly one compl
         stage: "garment",
         status: "failed",
         error: `Chroma key removal ${!chromaSuccess ? "failed" : `left ${verification.contaminatedPixels} contaminated pixels`}. Use cleanup editor to adjust tolerance.`,
-        failedStorageId: rawFailedStorageId,
+        ...(rawFailedStorageId ? { failedStorageId: rawFailedStorageId } : {}),
         chromaKey,
       });
       return;
@@ -769,15 +794,15 @@ Critical: Use no ${chromaKey} anywhere in the garment. Produce exactly one compl
         stage: "garment",
         status: "review",
         storageId: garmentStorageId,
-        failedStorageId: rawFailedStorageId,
+        ...(rawFailedStorageId ? { failedStorageId: rawFailedStorageId } : {}),
         chromaKey,
       });
     }
   },
 });
 
-/** Generate a modeled photo of the person wearing the garment. */
-export const generateModeled = action({
+/** Generate a modeled photo of the person wearing the garment (internal — called via scheduler). */
+export const generateModeled = internalAction({
   args: {
     jobId: v.id("importJobs"),
     garmentStorageId: v.id("_storage"),
@@ -892,8 +917,11 @@ export const regenerateStage = action({
     prompt: v.optional(v.string()),
   },
   handler: async (ctx, { jobId, stage, prompt }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Unauthorized");
     const job = await ctx.runQuery("import:getJobById", { jobId });
     if (!job) throw new Error("Import job not found");
+    if (job.userId !== userId) throw new Error("Not found");
 
     // Set stage status back to processing
     await ctx.runMutation("import:updateStageStatus", {
@@ -926,8 +954,11 @@ export const retryAnalysis = action({
     jobId: v.id("importJobs"),
   },
   handler: async (ctx, { jobId }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Unauthorized");
     const job = await ctx.runQuery("import:getJobById", { jobId });
     if (!job) throw new Error("Import job not found");
+    if (job.userId !== userId) throw new Error("Not found");
     if (job.kind !== "upload") throw new Error("Can only retry analysis on upload jobs");
 
     // Reset analysis status and re-schedule
@@ -951,8 +982,11 @@ export const runProductMatch = action({
     jobId: v.id("importJobs"),
   },
   handler: async (ctx, { jobId }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Unauthorized");
     const job = await ctx.runQuery("import:getJobById", { jobId });
     if (!job) throw new Error("Import job not found");
+    if (job.userId !== userId) throw new Error("Not found");
 
     const garmentStorageId = job.stages?.garment?.storageId;
     if (!garmentStorageId) return;
@@ -1037,7 +1071,17 @@ export const runProductMatch = action({
       });
       return;
     }
-    const parsed = JSON.parse(contentItem.text);
+    let parsed;
+    try {
+      parsed = JSON.parse(contentItem.text);
+    } catch (parseErr) {
+      console.error(`Product match JSON parse failed for ${jobId}:`, parseErr);
+      await ctx.runMutation("import:updateProductMatchStatus", {
+        jobId,
+        status: "failed",
+      });
+      return;
+    }
 
     // Extract web search sources from URL citation annotations (built-in
     // web_search tool) with a function_call_output fallback (custom tools).

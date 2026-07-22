@@ -10,16 +10,31 @@ const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL);
 class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
-    this.state = { hasError: false, error: null };
+    // A-28: Persist error state across remounts via sessionStorage
+    const persisted = (() => {
+      try {
+        const stored = sessionStorage.getItem("__error_boundary");
+        if (stored) return JSON.parse(stored);
+      } catch {}
+      return null;
+    })();
+    this.state = persisted || { hasError: false, error: null };
   }
 
   static getDerivedStateFromError(error) {
-    return { hasError: true, error };
+    const state = { hasError: true, error: { message: error.message, stack: error.stack } };
+    try { sessionStorage.setItem("__error_boundary", JSON.stringify(state)); } catch {}
+    return state;
   }
 
   componentDidCatch(error, info) {
     console.error("[ErrorBoundary]", error, info);
   }
+
+  handleReset = () => {
+    try { sessionStorage.removeItem("__error_boundary"); } catch {}
+    this.setState({ hasError: false, error: null });
+  };
 
   render() {
     if (this.state.hasError) {
@@ -30,7 +45,7 @@ class ErrorBoundary extends React.Component {
             {this.state.error?.message || "An unexpected error occurred."}
           </p>
           <button
-            onClick={() => this.setState({ hasError: false, error: null })}
+            onClick={this.handleReset}
             style={{ padding: "0.5rem 1rem", cursor: "pointer" }}
           >
             Try again

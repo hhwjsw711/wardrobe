@@ -269,6 +269,14 @@ export const analyzePhoto = action({
     const userId = await getAuthUserId(ctx);
     if (!userId) throw new Error("Unauthorized");
 
+    // A-07: Deduct analysis credits before making the OpenAI call
+    await ctx.runMutation("credits:deductAnalyzeInternal", { userId });
+
+    // A-14: Verify user owns this storageId (must appear in their import jobs)
+    const importJobs = await ctx.runQuery("import:getImportJobsForUser", { userId });
+    const ownsStorage = importJobs.some((j) => j.sourceStorageId === storageId);
+    if (!ownsStorage) throw new Error("Image not found or not owned by you");
+
     const imageUrl = await ctx.storage.getUrl(storageId);
     if (!imageUrl) throw new Error("Image not found in storage");
 
@@ -358,6 +366,9 @@ export const productMatch = action({
     // Read item from DB
     const item = await ctx.runQuery("wardrobe:getWardrobeItemById", { itemId });
     if (!item || item.userId !== userId) throw new Error("Not found");
+
+    // A-07: Deduct search credits before making the OpenAI call
+    await ctx.runMutation("credits:deductSearchInternal", { userId });
 
     const imageUrl = await ctx.storage.getUrl(item.garmentStorageId);
     if (!imageUrl) throw new Error("Garment image not found");
@@ -518,6 +529,9 @@ export const generateModeledForItem = action({
     const item = await ctx.runQuery("wardrobe:getWardrobeItemById", { itemId });
     if (!item || item.userId !== userId) throw new Error("Not found");
     if (!item.garmentStorageId) throw new Error("Garment image not found");
+
+    // A-07: Deduct modeled credits before making the OpenAI call
+    await ctx.runMutation("credits:deductModeledInternal", { userId });
 
     const garmentUrl = await ctx.storage.getUrl(item.garmentStorageId);
     if (!garmentUrl) throw new Error("Garment image not found");
