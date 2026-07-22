@@ -89,6 +89,9 @@ export const getImportJobs = query({
         const garmentFailedUrl = job.stages?.garment?.failedStorageId
           ? await ctx.storage.getUrl(job.stages.garment.failedStorageId)
           : null;
+        const cleanupPreviewUrl = job.stages?.garment?.cleanupPreviewStorageId
+          ? await ctx.storage.getUrl(job.stages.garment.cleanupPreviewStorageId)
+          : null;
         const modeledUrl = job.stages?.modeled?.storageId
           ? await ctx.storage.getUrl(job.stages.modeled.storageId)
           : null;
@@ -109,6 +112,10 @@ export const getImportJobs = query({
                   assetUrl: garmentUrl,
                   error: job.stages.garment.error,
                   failedAssetUrl: garmentFailedUrl,
+                  chromaKey: job.stages.garment.chromaKey,
+                  cleanupTolerance: job.stages.garment.cleanupTolerance,
+                  cleanupDiagnostics: job.stages.garment.cleanupDiagnostics,
+                  cleanupPreviewUrl,
                 }
               : undefined,
             modeled: job.stages?.modeled
@@ -696,6 +703,7 @@ Critical: Use no ${chromaKey} anywhere in the garment. Produce exactly one compl
         stage: "garment",
         status: "failed",
         error: `Image generation failed: ${response.status} - ${errText.substring(0, 300)}`,
+        chromaKey,
       });
       return;
     }
@@ -709,15 +717,30 @@ Critical: Use no ${chromaKey} anywhere in the garment. Produce exactly one compl
         stage: "garment",
         status: "failed",
         error: "No image data in response",
+        chromaKey,
       });
       return;
     }
 
     // Remove chroma key background + frame garment (delegated to Node.js runtime)
-    const { garmentStorageId, failedStorageId: rawFailedStorageId } = await ctx.runAction(
+    const { garmentStorageId, failedStorageId: rawFailedStorageId, verification, chromaSuccess } = await ctx.runAction(
       "imageActions:processGarmentImage",
       { imageBase64, chromaKey },
     );
+
+    // If chroma removal failed or left contamination, mark stage as "failed"
+    // so the user can use the cleanup editor to fix it with a different tolerance.
+    if (!chromaSuccess || verification.contaminatedPixels > 1) {
+      await ctx.runMutation("import:updateStageStatus", {
+        jobId,
+        stage: "garment",
+        status: "failed",
+        error: `Chroma key removal ${!chromaSuccess ? "failed" : `left ${verification.contaminatedPixels} contaminated pixels`}. Use cleanup editor to adjust tolerance.`,
+        failedStorageId: rawFailedStorageId,
+        chromaKey,
+      });
+      return;
+    }
 
     if (job.autoProcess) {
       // Auto-approve: update stage, create wardrobe item, schedule modeled
@@ -733,6 +756,7 @@ Critical: Use no ${chromaKey} anywhere in the garment. Produce exactly one compl
         status: "review",
         storageId: garmentStorageId,
         failedStorageId: rawFailedStorageId,
+        chromaKey,
       });
     }
   },
@@ -1067,7 +1091,7 @@ export const runProductMatch = action({
 
 // ─── Internal Mutations (called by actions) ──────────────────────
 
-/** Update a stage's status (and optionally its storageId). */
+/** Update a stage's status (and optionally its storageId, chromaKey, etc.). */
 export const updateStageStatus = mutation({
   args: {
     jobId: v.id("importJobs"),
@@ -1083,8 +1107,9 @@ export const updateStageStatus = mutation({
     storageId: v.optional(v.id("_storage")),
     failedStorageId: v.optional(v.id("_storage")),
     error: v.optional(v.string()),
+    chromaKey: v.optional(v.string()),
   },
-  handler: async (ctx, { jobId, stage, status, storageId, failedStorageId, error }) => {
+  handler: async (ctx, { jobId, stage, status, storageId, failedStorageId, error, chromaKey }) => {
     const job = await ctx.db.get(jobId);
     if (!job) throw new Error("Not found");
     const stages = job.stages || { crop: {}, garment: {}, modeled: {} };
@@ -1092,7 +1117,121 @@ export const updateStageStatus = mutation({
     if (storageId !== undefined) updated.storageId = storageId;
     if (failedStorageId !== undefined) updated.failedStorageId = failedStorageId;
     if (error !== undefined) updated.error = error;
+    if (chromaKey !== undefined) updated.chromaKey = chromaKey;
     stages[stage] = updated;
+    await ctx.db.patch(jobId, { stages });
+  },
+});
+
+// ─── Cleanup Editor ──────────────────────────────────────────────
+
+/** Preview a cleanup pass on a failed garment image with a user-specified tolerance.
+ *  Re-runs chroma removal on the raw failed-source image and stores the preview.
+ *  Does NOT change the stage status (stays "failed"). */
+export const cleanupPreview = action({
+  args: {
+    jobId: v.id("importJobs"),
+    tolerance: v.number(),
+  },
+  handler: async (ctx, { jobId, tolerance }) => {
+    const job = await ctx.runQuery("import:getJobForCleanup", { jobId });
+    if (!job) throw new Error("Job not found");
+    const garment = job.stages?.garment;
+    if (!garment) throw new Error("No garment stage");
+    if (!garment.failedStorageId) throw new Error("No failed-source image to clean up");
+    if (!garment.chromaKey) throw new Error("No chroma key stored for this garment");
+
+    const { previewStorageId, verification, tolerance: clampedTolerance } = await ctx.runAction(
+      "imageActions:cleanupGarmentPreview",
+      {
+        failedStorageId: garment.failedStorageId,
+        chromaKey: garment.chromaKey,
+        tolerance,
+      },
+    );
+
+    // Update stage with cleanup results (status stays "failed")
+    await ctx.runMutation("import:updateCleanupFields", {
+      jobId,
+      cleanupTolerance: clampedTolerance,
+      cleanupDiagnostics: verification,
+      cleanupPreviewStorageId: previewStorageId,
+    });
+
+    return { tolerance: clampedTolerance, verification };
+  },
+});
+
+/** Accept a cleanup preview: promote it to the garment's asset and set status to "review". */
+export const cleanupAccept = action({
+  args: {
+    jobId: v.id("importJobs"),
+  },
+  handler: async (ctx, { jobId }) => {
+    const job = await ctx.runQuery("import:getJobForCleanup", { jobId });
+    if (!job) throw new Error("Job not found");
+    const garment = job.stages?.garment;
+    if (!garment) throw new Error("No garment stage");
+    if (!garment.cleanupPreviewStorageId) throw new Error("No cleanup preview to accept");
+
+    // Promote preview to garment asset, set status to review
+    await ctx.runMutation("import:promoteCleanupPreview", { jobId });
+  },
+});
+
+/** Internal query: get a job for cleanup operations (verifies ownership). */
+export const getJobForCleanup = internalQuery({
+  args: { jobId: v.id("importJobs") },
+  handler: async (ctx, { jobId }) => {
+    const userId = await requireAuthedUserId(ctx);
+    const job = await ctx.db.get(jobId);
+    if (!job || job.userId !== userId) return null;
+    return job;
+  },
+});
+
+/** Internal mutation: update cleanup fields on the garment stage. */
+export const updateCleanupFields = internalMutation({
+  args: {
+    jobId: v.id("importJobs"),
+    cleanupTolerance: v.number(),
+    cleanupDiagnostics: v.object({
+      contaminatedPixels: v.number(),
+      maxSpill: v.number(),
+    }),
+    cleanupPreviewStorageId: v.id("_storage"),
+  },
+  handler: async (ctx, { jobId, cleanupTolerance, cleanupDiagnostics, cleanupPreviewStorageId }) => {
+    const job = await ctx.db.get(jobId);
+    if (!job) throw new Error("Not found");
+    const stages = job.stages || { crop: {}, garment: {}, modeled: {} };
+    stages.garment = {
+      ...stages.garment,
+      cleanupTolerance,
+      cleanupDiagnostics,
+      cleanupPreviewStorageId,
+    };
+    await ctx.db.patch(jobId, { stages });
+  },
+});
+
+/** Internal mutation: promote cleanup preview to garment asset and set status to review. */
+export const promoteCleanupPreview = internalMutation({
+  args: {
+    jobId: v.id("importJobs"),
+  },
+  handler: async (ctx, { jobId }) => {
+    const job = await ctx.db.get(jobId);
+    if (!job) throw new Error("Not found");
+    const stages = job.stages || { crop: {}, garment: {}, modeled: {} };
+    const garment = stages.garment;
+    if (!garment?.cleanupPreviewStorageId) throw new Error("No cleanup preview to accept");
+    stages.garment = {
+      ...garment,
+      status: "review" as const,
+      storageId: garment.cleanupPreviewStorageId,
+      error: undefined,
+    };
     await ctx.db.patch(jobId, { stages });
   },
 });

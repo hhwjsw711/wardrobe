@@ -337,6 +337,8 @@ export function useConvexImportFlow() {
   const retry = useAction(api.import.retryAnalysis);
   const saveRef = useMutation(api.import.saveModelReference);
   const deleteRef = useMutation(api.import.deleteModelReference);
+  const cleanupPreviewAction = useAction(api.import.cleanupPreview);
+  const cleanupAcceptAction = useAction(api.import.cleanupAccept);
 
   // Stable references for loading state — see EMPTY_ARRAY comment above.
   const jobs = useMemo(() => rawJobs ?? EMPTY_IMPORT_JOBS, [rawJobs]);
@@ -434,6 +436,14 @@ export function useConvexImportFlow() {
 
     deleteModelReference: async (refId) => {
       await deleteRef({ refId });
+    },
+
+    cleanupPreview: async (jobId, tolerance) => {
+      return cleanupPreviewAction({ jobId, tolerance });
+    },
+
+    cleanupAccept: async (jobId) => {
+      return cleanupAcceptAction({ jobId });
     },
   };
 }

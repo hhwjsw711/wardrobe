@@ -186,6 +186,13 @@ export default defineSchema({
         storageId: v.optional(v.id("_storage")),
         error: v.optional(v.string()),
         failedStorageId: v.optional(v.id("_storage")),
+        chromaKey: v.optional(v.string()),
+        cleanupTolerance: v.optional(v.number()),
+        cleanupDiagnostics: v.optional(v.object({
+          contaminatedPixels: v.number(),
+          maxSpill: v.number(),
+        })),
+        cleanupPreviewStorageId: v.optional(v.id("_storage")),
       })),
       modeled: v.optional(v.object({
         status: StageStatus,

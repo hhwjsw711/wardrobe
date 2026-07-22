@@ -151,10 +151,91 @@ async function verifyNoChromaSpill(bytes: Buffer, key: string) {
   return { contaminatedPixels, maxSpill };
 }
 
+/** Core chroma key removal algorithm (3-pass + framing + verification).
+ *  Extracted so both processGarmentImage and cleanupGarmentPreview can use it.
+ *  Returns the processed buffer and verification result. */
+async function processChromaBackground(
+  rawBuffer: Buffer,
+  chromaKey: string,
+  tolerance: number,
+): Promise<{ processed: Buffer; verification: { contaminatedPixels: number; maxSpill: number } }> {
+  const feather = 80;
+  const target = [1, 3, 5].map((offset) => Number.parseInt(chromaKey.slice(offset, offset + 2), 16));
+  const keyedChannels = target.map((channel, index) => channel > 200 ? index : null).filter((index) => index !== null) as number[];
+  const neutralChannels = target.map((channel, index) => channel < 55 ? index : null).filter((index) => index !== null) as number[];
+
+  const { data, info } = await sharp(rawBuffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+
+  // Pass 1: chroma key removal + keyed spill reduction
+  for (let index = 0; index < data.length; index += 4) {
+    const distance = Math.sqrt(
+      ((data[index] - target[0]) ** 2)
+      + ((data[index + 1] - target[1]) ** 2)
+      + ((data[index + 2] - target[2]) ** 2),
+    );
+    if (distance <= tolerance) {
+      data[index] = 0;
+      data[index + 1] = 0;
+      data[index + 2] = 0;
+      data[index + 3] = 0;
+    } else {
+      if (distance < tolerance + feather) {
+        data[index + 3] = Math.round(data[index + 3] * ((distance - tolerance) / feather));
+      }
+      const keyedLevel = keyedChannels.reduce((total, channel) => total + data[index + channel], 0) / keyedChannels.length;
+      const neutralLevel = neutralChannels.reduce((total, channel) => total + data[index + channel], 0) / neutralChannels.length;
+      const spill = Math.max(0, keyedLevel - neutralLevel);
+      if (spill > 0) {
+        const spillAlpha = Math.max(0, 1 - (Math.max(0, spill - 4) / 150));
+        data[index + 3] = Math.round(data[index + 3] * spillAlpha);
+        removeKeyedSpill(data, index, keyedChannels, neutralLevel);
+      }
+      if (data[index + 3] <= 8) {
+        data[index] = 0;
+        data[index + 1] = 0;
+        data[index + 2] = 0;
+        data[index + 3] = 0;
+      }
+    }
+  }
+
+  // Pass 2: residual spill sweep
+  for (let index = 0; index < data.length; index += 4) {
+    if (data[index + 3] === 0) continue;
+    const keyedLevel = keyedChannels.reduce((total, channel) => total + data[index + channel], 0) / keyedChannels.length;
+    const neutralLevel = neutralChannels.reduce((total, channel) => total + data[index + channel], 0) / neutralChannels.length;
+    const residualSpill = Math.max(0, keyedLevel - neutralLevel);
+    if (residualSpill > 0) {
+      removeKeyedSpill(data, index, keyedChannels, neutralLevel);
+    }
+  }
+
+  const keyedOutput = await sharp(data, { raw: info }).png().toBuffer();
+  const framedOutput = await frameTransparentGarment(keyedOutput);
+
+  // Pass 3: post-frame residual spill sweep
+  const { data: framedData, info: framedInfo } = await sharp(framedOutput).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  for (let index = 0; index < framedData.length; index += 4) {
+    if (framedData[index + 3] === 0) continue;
+    const keyedLevel = keyedChannels.reduce((total, channel) => total + framedData[index + channel], 0) / keyedChannels.length;
+    const neutralLevel = neutralChannels.reduce((total, channel) => total + framedData[index + channel], 0) / neutralChannels.length;
+    const residualSpill = Math.max(0, keyedLevel - neutralLevel);
+    if (residualSpill <= 0) continue;
+    removeKeyedSpill(framedData, index, keyedChannels, neutralLevel);
+  }
+  const processed = await sharp(framedData, { raw: framedInfo }).png().toBuffer();
+
+  const verification = await verifyNoChromaSpill(processed, chromaKey);
+  console.log(`Chroma cleanup (tolerance=${tolerance}): ${verification.contaminatedPixels} contaminated pixels, max spill ${verification.maxSpill.toFixed(2)}`);
+
+  return { processed, verification };
+}
+
 /** Remove chroma key background from a garment image and frame it on 1024x1024 transparent canvas.
  *  Port of original processChromaBackground + frameTransparentGarment + verifyNoChromaSpill.
- *  Returns { garmentStorageId, failedStorageId, verification } — the cleaned image,
- *  the raw (pre-cleanup) image, and the chroma-spill verification result. */
+ *  Returns { garmentStorageId, failedStorageId, verification, chromaSuccess } — the cleaned image,
+ *  the raw (pre-cleanup) image, the chroma-spill verification result, and whether chroma
+ *  removal succeeded (false = processing threw, garment image is raw/unusable). */
 export const processGarmentImage = action({
   args: {
     imageBase64: v.string(),
@@ -163,79 +244,15 @@ export const processGarmentImage = action({
   handler: async (ctx, { imageBase64, chromaKey }) => {
     const rawBuffer = Buffer.from(imageBase64, "base64");
 
-    const tolerance = 46;
-    const feather = 80;
-    const target = [1, 3, 5].map((offset) => Number.parseInt(chromaKey.slice(offset, offset + 2), 16));
-    const keyedChannels = target.map((channel, index) => channel > 200 ? index : null).filter((index) => index !== null) as number[];
-    const neutralChannels = target.map((channel, index) => channel < 55 ? index : null).filter((index) => index !== null) as number[];
-
     let processedBuffer: Buffer;
     let verification = { contaminatedPixels: 0, maxSpill: 0 };
+    let chromaSuccess = false;
 
     try {
-      const { data, info } = await sharp(rawBuffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-
-      // Pass 1: chroma key removal + keyed spill reduction
-      for (let index = 0; index < data.length; index += 4) {
-        const distance = Math.sqrt(
-          ((data[index] - target[0]) ** 2)
-          + ((data[index + 1] - target[1]) ** 2)
-          + ((data[index + 2] - target[2]) ** 2),
-        );
-        if (distance <= tolerance) {
-          data[index] = 0;
-          data[index + 1] = 0;
-          data[index + 2] = 0;
-          data[index + 3] = 0;
-        } else {
-          if (distance < tolerance + feather) {
-            data[index + 3] = Math.round(data[index + 3] * ((distance - tolerance) / feather));
-          }
-          const keyedLevel = keyedChannels.reduce((total, channel) => total + data[index + channel], 0) / keyedChannels.length;
-          const neutralLevel = neutralChannels.reduce((total, channel) => total + data[index + channel], 0) / neutralChannels.length;
-          const spill = Math.max(0, keyedLevel - neutralLevel);
-          if (spill > 0) {
-            const spillAlpha = Math.max(0, 1 - (Math.max(0, spill - 4) / 150));
-            data[index + 3] = Math.round(data[index + 3] * spillAlpha);
-            removeKeyedSpill(data, index, keyedChannels, neutralLevel);
-          }
-          if (data[index + 3] <= 8) {
-            data[index] = 0;
-            data[index + 1] = 0;
-            data[index + 2] = 0;
-            data[index + 3] = 0;
-          }
-        }
-      }
-
-      // Pass 2: residual spill sweep
-      for (let index = 0; index < data.length; index += 4) {
-        if (data[index + 3] === 0) continue;
-        const keyedLevel = keyedChannels.reduce((total, channel) => total + data[index + channel], 0) / keyedChannels.length;
-        const neutralLevel = neutralChannels.reduce((total, channel) => total + data[index + channel], 0) / neutralChannels.length;
-        const residualSpill = Math.max(0, keyedLevel - neutralLevel);
-        if (residualSpill > 0) {
-          removeKeyedSpill(data, index, keyedChannels, neutralLevel);
-        }
-      }
-
-      const keyedOutput = await sharp(data, { raw: info }).png().toBuffer();
-      const framedOutput = await frameTransparentGarment(keyedOutput);
-
-      // Pass 3: post-frame residual spill sweep
-      const { data: framedData, info: framedInfo } = await sharp(framedOutput).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-      for (let index = 0; index < framedData.length; index += 4) {
-        if (framedData[index + 3] === 0) continue;
-        const keyedLevel = keyedChannels.reduce((total, channel) => total + framedData[index + channel], 0) / keyedChannels.length;
-        const neutralLevel = neutralChannels.reduce((total, channel) => total + framedData[index + channel], 0) / neutralChannels.length;
-        const residualSpill = Math.max(0, keyedLevel - neutralLevel);
-        if (residualSpill <= 0) continue;
-        removeKeyedSpill(framedData, index, keyedChannels, neutralLevel);
-      }
-      processedBuffer = await sharp(framedData, { raw: framedInfo }).png().toBuffer();
-
-      verification = await verifyNoChromaSpill(processedBuffer, chromaKey);
-      console.log(`Garment cleanup verification: ${verification.contaminatedPixels} contaminated pixels, max spill ${verification.maxSpill.toFixed(2)}`);
+      const result = await processChromaBackground(rawBuffer, chromaKey, 46);
+      processedBuffer = result.processed;
+      verification = result.verification;
+      chromaSuccess = true;
     } catch (chromaError) {
       console.warn("Chroma key removal failed, using raw garment:", chromaError);
       processedBuffer = rawBuffer;
@@ -259,6 +276,41 @@ export const processGarmentImage = action({
     });
     const { storageId: garmentStorageId } = await garmentResp.json();
 
-    return { garmentStorageId, failedStorageId, verification };
+    return { garmentStorageId, failedStorageId, verification, chromaSuccess };
+  },
+});
+
+/** Cleanup editor: re-process a failed garment image with a user-specified tolerance.
+ *  Downloads the raw failed-source image, runs chroma removal with the given tolerance,
+ *  uploads the preview, and returns the preview storage ID + verification. */
+export const cleanupGarmentPreview = action({
+  args: {
+    failedStorageId: v.id("_storage"),
+    chromaKey: v.string(),
+    tolerance: v.number(),
+  },
+  handler: async (ctx, { failedStorageId, chromaKey, tolerance }) => {
+    // Clamp tolerance to [18, 110] like the original upstream
+    const clampedTolerance = Math.max(18, Math.min(110, tolerance));
+
+    // Download the raw failed-source image
+    const failedUrl = await ctx.storage.getUrl(failedStorageId);
+    if (!failedUrl) throw new Error("Failed-source image not found");
+    const failedResp = await fetch(failedUrl);
+    const rawBuffer = Buffer.from(await failedResp.arrayBuffer());
+
+    // Process with user-specified tolerance (non-strict — never throws)
+    const { processed, verification } = await processChromaBackground(rawBuffer, chromaKey, clampedTolerance);
+
+    // Upload preview
+    const previewUploadUrl = await ctx.storage.generateUploadUrl();
+    const previewResp = await fetch(previewUploadUrl, {
+      method: "POST",
+      headers: { "Content-Type": "image/png" },
+      body: processed,
+    });
+    const { storageId: previewStorageId } = await previewResp.json();
+
+    return { previewStorageId, verification, tolerance: clampedTolerance };
   },
 });
