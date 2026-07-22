@@ -329,7 +329,7 @@ function ItemEditor({ draft, setDraft, palette, sampling, setSampling, sampleSta
   );
 }
 
-function ItemViewer({ item, onClose, onSave, onDelete, onIdentifyProduct, onGenerateModeled }) {
+function ItemViewer({ item, onClose, onSave, onDelete, onIdentifyProduct, onGenerateModeled, creditBalance }) {
   const closeButtonRef = useRef(null);
   const imageRef = useRef(null);
   const samplingCanvasRef = useRef(null);
@@ -344,6 +344,14 @@ function ItemViewer({ item, onClose, onSave, onDelete, onIdentifyProduct, onGene
   const [actionError, setActionError] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [matchingProduct, setMatchingProduct] = useState(false);
+
+  // Friendly insufficient-credits message
+  const creditsError = useCallback((msg, cost) => {
+    if (msg && msg.includes("Insufficient credits")) {
+      return `Not enough credits (need ${cost}, have ${creditBalance ?? "?"}). Free credits reset monthly.`;
+    }
+    return msg;
+  }, [creditBalance]);
   const [generatingModeled, setGeneratingModeled] = useState(false);
 
   // A-11/A-20: Only reset draft when the item ID changes, not on every
@@ -469,7 +477,7 @@ function ItemViewer({ item, onClose, onSave, onDelete, onIdentifyProduct, onGene
       setDraft({ name: matched.name || "", part: matched.part, color: matched.color || "#9a9286", secondaryColor: matched.secondaryColor || null, tags: [...(matched.tags || [])] });
       setSampleStatus(matched.productConfidence === "exact" ? "Exact product match saved." : matched.productConfidence === "likely" ? "Possible product match saved with its source." : "No exact product match was supported by the photo.");
     } catch (error) {
-      setActionError(error.message);
+      setActionError(creditsError(error.message, 5));
     } finally {
       setMatchingProduct(false);
     }
@@ -482,7 +490,7 @@ function ItemViewer({ item, onClose, onSave, onDelete, onIdentifyProduct, onGene
       await onGenerateModeled(item.id);
       setSampleStatus("Modeled photo generated. It will appear above shortly.");
     } catch (error) {
-      setActionError(error.message);
+      setActionError(creditsError(error.message, 10));
     } finally {
       setGeneratingModeled(false);
     }
@@ -1203,6 +1211,17 @@ export function App() {
   const outfitsHook = useConvexOutfits();
   const creditsHook = useConvexCredits();
 
+  // Auto-grant monthly credits on login (idempotent — skips if already granted this month).
+  const grantMonthlyRef = useRef(false);
+  useEffect(() => {
+    if (!isAuthenticated || grantMonthlyRef.current) return;
+    grantMonthlyRef.current = true;
+    creditsHook.grantMonthly().catch((err) => {
+      grantMonthlyRef.current = false;
+      console.warn("[grantMonthlyCredits] failed:", err?.message ?? err);
+    });
+  }, [isAuthenticated, creditsHook.grantMonthly]);
+
   const items = wardrobe.items;
   const loading = wardrobe.loading;
   const outfits = outfitsHook.outfits;
@@ -1456,7 +1475,7 @@ export function App() {
         )}
       </main>
 
-      {selectedItem && <ItemViewer item={selectedItem} onClose={handleCloseItem} onSave={saveItem} onDelete={deleteItem} onIdentifyProduct={identifyProduct} onGenerateModeled={generateModeled} />}
+      {selectedItem && <ItemViewer item={selectedItem} onClose={handleCloseItem} onSave={saveItem} onDelete={deleteItem} onIdentifyProduct={identifyProduct} onGenerateModeled={generateModeled} creditBalance={creditsHook.balance.balance} />}
       {selectedOutfit && (
         <OutfitViewer
           outfit={selectedOutfit}

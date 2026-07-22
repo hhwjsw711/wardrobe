@@ -24,6 +24,7 @@ const Plan = v.union(v.literal("free"), v.literal("pro"), v.literal("max"));
 const CreditReason = v.union(
   v.literal("tryon"),
   v.literal("search"),
+  v.literal("analyze"),
   v.literal("modeled"),
   v.literal("refund"),
   v.literal("grant"),

@@ -6,6 +6,12 @@ import { SpinnerGap, WarningCircle } from "@phosphor-icons/react";
  * Auth form for sign in / sign up with email + password.
  * Fits into the app's visual language: Instrument Sans, paper/ink palette.
  */
+
+// Feature flags: set to true once the corresponding OAuth provider is configured
+// in Convex environment variables (AUTH_GITHUB_ID / AUTH_GOOGLE_ID etc.).
+const OAUTH_GITHUB_ENABLED = false;
+const OAUTH_GOOGLE_ENABLED = false;
+
 export function AuthForm() {
   const { signIn } = useAuthActions();
   const { isAuthenticated, isLoading } = useConvexAuth();
@@ -75,13 +81,15 @@ export function AuthForm() {
         <h1 className="auth-title">{isSignUp ? "Create account" : "Sign in"}</h1>
         <p className="auth-subtitle">{isSignUp ? "Start your private wardrobe" : "Welcome back to your wardrobe"}</p>
 
-        {/* OAuth buttons */}
-        <div className="auth-oauth-row">
-          <button className="auth-oauth-button" type="button" onClick={handleGitHub}>GitHub</button>
-          <button className="auth-oauth-button" type="button" onClick={handleGoogle}>Google</button>
-        </div>
+        {/* OAuth buttons — only render when provider is configured */}
+        {(OAUTH_GITHUB_ENABLED || OAUTH_GOOGLE_ENABLED) && (
+          <div className="auth-oauth-row">
+            {OAUTH_GITHUB_ENABLED && <button className="auth-oauth-button" type="button" onClick={handleGitHub}>GitHub</button>}
+            {OAUTH_GOOGLE_ENABLED && <button className="auth-oauth-button" type="button" onClick={handleGoogle}>Google</button>}
+          </div>
+        )}
 
-        <div className="auth-divider"><span>or</span></div>
+        {(OAUTH_GITHUB_ENABLED || OAUTH_GOOGLE_ENABLED) && <div className="auth-divider"><span>or</span></div>}
 
         {/* Email + password form */}
         <form className="auth-form" onSubmit={handleSubmit}>

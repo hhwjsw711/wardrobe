@@ -606,7 +606,9 @@ export const generateModeledForItem = action({
         try {
           await ctx.runMutation("credits:refundCredits", { userId, amount: 10, reason: `Modeled photo failed: ${err?.message || String(err)}` });
         } catch (refundErr) {
-          console.error("Failed to refund credits:", refundErr);
+          // Re-throw on refund failure so Convex retries the entire action atomically.
+          // Silently swallowing would leave the user short of credits.
+          throw refundErr;
         }
       }
       // Return error as data (not throw) so client receives the actual message
