@@ -8,7 +8,7 @@
  * (_id → id, garmentUrl → image, etc.), so component logic stays unchanged.
  */
 import { useQuery, useMutation, useAction } from "convex/react";
-import { useMemo } from "react";
+import { useMemo, useCallback } from "react";
 import { api } from "../../convex/_generated/api";
 
 // Module-level constants so loading-state placeholders keep a stable

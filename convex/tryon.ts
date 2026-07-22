@@ -1,7 +1,6 @@
 import { v } from "convex/values";
 import { query, mutation, action, internalQuery, internalMutation } from "./_generated/server";
 import { requireAuthedUserId } from "./helpers";
-import { deductTryonImpl } from "./credits";
 import { safeRecord } from "./usage";
 
 // ─── Error helpers ─────────────────────────────────────────────────
@@ -143,7 +142,7 @@ export const getTryonResult = query({
 
 // ─── Mutations ──────────────────────────────────────────────────
 
-/** Start a try-on job. Deducts 10 credits and schedules AI processing. */
+/** Start a try-on job. Free experimental feature — no credits deducted. */
 export const startTryon = mutation({
   args: {
     outfitId: v.id("outfits"),
@@ -156,25 +155,14 @@ export const startTryon = mutation({
     if (!outfit || outfit.userId !== userId) throw new Error("Outfit not found");
     if (outfit.status !== "ready") throw new Error("Outfit not ready for try-on");
 
-    // Create the job first so we have an ID for the ledger `refId`.
+    // Create the job — no credit deduction (free experimental feature).
     const jobId = await ctx.db.insert("tryonJobs", {
       userId,
       outfitId,
       status: "pending",
     });
 
-    // Deduct 10 credits. Throws if insufficient — roll back the job on
-    // failure so we don't leave an orphan "pending" row.
-    try {
-      await deductTryonImpl(ctx, userId, jobId);
-    } catch (err) {
-      await ctx.db.delete(jobId);
-      throw err;
-    }
-
     // Kick off the actual image generation asynchronously.
-    // processTryon runs without user auth (scheduler-invoked actions don't
-    // carry sessions), so any DB writes inside it use internal mutations.
     await ctx.scheduler.runAfter(0, "tryon:processTryon", { jobId });
 
     return { jobId };
@@ -200,8 +188,9 @@ export const processTryon = action({
       if (!outfitImageUrl) throw new Error("Cannot get outfit image URL");
 
       // Call OpenAI for try-on generation
-      // TODO: Implement actual try-on API call (may need different model/endpoint)
-      // For now, this is a placeholder that mirrors the outfit image
+      // NOTE: This is an experimental feature. The current implementation
+      // regenerates the outfit image with a try-on prompt as a placeholder.
+      // A real virtual try-on would need a specialized model/endpoint.
 
       const baseUrl = process.env.OPENAI_API_BASE_URL || "https://api.openai.com/v1";
       const model = process.env.OPENAI_IMAGE_MODEL || "gpt-image-2";
@@ -265,20 +254,7 @@ export const processTryon = action({
         status: "failed",
         error: friendly,
       });
-      // Refund the 10 credits deducted by startTryon. Uses the internal
-      // mutation because scheduler-invoked actions don't carry user auth,
-      // so the public refundCredits mutation would throw "Unauthorized".
-      try {
-        await ctx.runMutation("credits:refundCreditsInternal", {
-          userId: job.userId,
-          amount: 10,
-          reason: "refund",
-          refId: jobId,
-        });
-      } catch (refundErr) {
-        // Don't let a refund failure mask the original error.
-        console.error("[tryon] refund failed for job", jobId, refundErr);
-      }
+      // No refund needed — try-on is a free experimental feature.
     }
   },
 });

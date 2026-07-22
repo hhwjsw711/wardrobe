@@ -1004,7 +1004,7 @@ function OutfitViewer({ outfit, lookNumber, onClose, onDelete, onRegenerate, try
                   type="button"
                   onClick={() => onTryOn()}
                   disabled={tryonInProgress}
-                  aria-label="Start virtual try-on (10 credits)"
+                  aria-label="Start virtual try-on (experimental, free)"
                 >
                   {tryonInProgress ? (
                     <>
@@ -1012,7 +1012,7 @@ function OutfitViewer({ outfit, lookNumber, onClose, onDelete, onRegenerate, try
                       Generating…
                     </>
                   ) : (
-                    "Try On"
+                    "Try On (Experimental)"
                   )}
                 </button>
               )}
